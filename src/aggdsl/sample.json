@@ -1,0 +1,43 @@
+{
+  "response": {
+    "location": "request",
+    "mimeType": "application/json"
+  },
+  "request": [
+    {
+      "source": {
+        "pageEvents": {
+          "pageId": "Mal8cGcc-XXqBEJ-c5C1L3frUz8",
+          "blacklist": "apply"
+        },
+        "timeSeries": {
+          "period": "dayRange",
+          "first": 1765094354353,
+          "count": 30
+        }
+      }
+    },
+    {
+      "group": {
+        "group": [
+          "pageId"
+        ],
+        "fields": [
+          {
+            "numEvents": {
+              "sum": "numEvents"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "sort": [
+        "-numEvents"
+      ]
+    },
+    {
+      "limit": 100
+    }
+  ]
+}
