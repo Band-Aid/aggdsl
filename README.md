@@ -86,6 +86,8 @@ Merge blocks:
 
 For a full, real-world example, see [examples/nps_responses.dsl](examples/nps_responses.dsl).
 
+For session replay queries and comprehensive enrichment patterns, see [SESSION_REPLAY_EXAMPLES.md](SESSION_REPLAY_EXAMPLES.md).
+
 For advanced pipelines that include stages not yet modeled in the DSL, you can inject a raw JSON stage:
 
 ```text

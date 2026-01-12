@@ -158,7 +158,7 @@ _MERGE_HEADER_RE = re.compile(
 @dataclass(frozen=True)
 class _GroupFields:
     group: list[str]
-    fields: list[tuple[str, str, str | None]]
+    fields: list[tuple[str, str, Any]]
     emit_map: bool = False
 
 
@@ -177,7 +177,6 @@ def parse(dsl: str) -> Query:
         rm = _RESPONSE_RE.match(lines[idx])
         if rm:
             kv = _split_kv_pairs(rm.group("rest"))
-            # Supported: mimeType=..., location=request (ignored for now, always request)
             if "mimeType" in kv:
                 response_mime_type = str(kv["mimeType"])
             idx += 1
@@ -250,10 +249,27 @@ def parse(dsl: str) -> Query:
             raise DslParseError(f"Expected pipeline stage starting with '|': {lines[idx]}")
 
         stage_text = pm.group("rest").strip()
+
+        # Multiline group stage support.
+        # Allows formatting the `fields { ... }` block across multiple lines.
+        # Continuation lines may start with `|` / `||` (especially inside fork/spawn branches),
+        # or may be plain lines (top-level formatting).
+        if stage_text.lower().startswith("group ") and "{" in stage_text and not _balanced_braces(
+            stage_text
+        ):
+            stage_text, idx = _consume_multiline_brace_stage(stage_text, lines, idx + 1)
+            stages.append(_parse_stage(stage_text))
+            continue
         # Spawn block support.
         if stage_text.lower() == "spawn":
             spawn_queries, idx = _parse_spawn_block(lines, idx + 1)
             stages.append(Stage(kind="spawn", payload=spawn_queries))
+            continue
+
+        # Fork block support.
+        if stage_text.lower() == "fork":
+            fork_queries, idx = _parse_fork_block(lines, idx + 1)
+            stages.append(Stage(kind="fork", payload=fork_queries))
             continue
 
         # Merge block support.
@@ -286,6 +302,20 @@ def parse(dsl: str) -> Query:
             stages.append(Stage(kind="bulkExpand", payload=obj))
             continue
 
+        # Multiline fork stage support.
+        if stage_text.lower().startswith("fork "):
+            fork_start = stage_text[len("fork ") :].strip()
+            arr, idx = _parse_raw_json_array_multiline(fork_start, lines, idx + 1)
+            stages.append(Stage(kind="fork", payload=arr))
+            continue
+
+        # Multiline sessionReplays stage support.
+        if stage_text.lower().startswith("sessionreplays "):
+            sr_start = stage_text[len("sessionreplays ") :].strip()
+            obj, idx = _parse_raw_json_object_multiline(sr_start, lines, idx + 1)
+            stages.append(Stage(kind="sessionReplays", payload=obj))
+            continue
+
         stages.append(_parse_stage(stage_text))
         idx += 1
 
@@ -296,6 +326,58 @@ def parse(dsl: str) -> Query:
         response_mime_type=response_mime_type,
         request_name=request_name,
     )
+
+
+def _balanced_braces(text: str) -> bool:
+    in_quotes = False
+    escape = False
+    depth = 0
+    saw_open = False
+    for ch in text:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_quotes = not in_quotes
+            continue
+        if in_quotes:
+            continue
+        if ch == "{":
+            saw_open = True
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+    return saw_open and depth == 0
+
+
+def _consume_multiline_brace_stage(
+    first_fragment: str,
+    lines: list[str],
+    next_idx: int,
+) -> tuple[str, int]:
+    """Consume continuation lines until braces are balanced.
+
+    Used for non-JSON DSL constructs that embed brace blocks (e.g. `group ... fields { ... }`).
+    Continuation lines may start with `|`/`||` (treated as continuation content), or may be
+    plain lines.
+    """
+    buf = [first_fragment]
+    candidate = " ".join(buf).strip()
+
+    while candidate and not _balanced_braces(candidate) and next_idx < len(lines):
+        line = lines[next_idx]
+        pm = _PIPE_RE.match(line)
+        if pm:
+            buf.append(pm.group("rest").strip())
+        else:
+            buf.append(line.strip())
+        next_idx += 1
+        candidate = " ".join(buf).strip()
+
+    return candidate, next_idx
 
 
 def _coerce_time_value(value: Any) -> int | str:
@@ -404,6 +486,18 @@ def _parse_stage(text: str) -> Stage:
         rest = text[len("bulkexpand ") :].strip()
         obj = _parse_raw_json_object(rest)
         return Stage(kind="bulkExpand", payload=obj)
+
+    # fork [ ...json array... ]
+    if text.lower().startswith("fork "):
+        rest = text[len("fork ") :].strip()
+        arr = _parse_raw_json_array(rest)
+        return Stage(kind="fork", payload=arr)
+
+    # sessionReplays { ...json... }
+    if text.lower().startswith("sessionreplays "):
+        rest = text[len("sessionreplays ") :].strip()
+        obj = _parse_raw_json_object(rest)
+        return Stage(kind="sessionReplays", payload=obj)
 
     # raw { ...json... }
     if text.lower().startswith("raw "):
@@ -579,6 +673,85 @@ def _parse_spawn_block(lines: list[str], idx: int) -> tuple[list[Query], int]:
     raise DslParseError("spawn block missing '| endspawn'")
 
 
+def _parse_fork_block(lines: list[str], idx: int) -> tuple[list[Query], int]:
+    """Parse a fork block starting at lines[idx].
+
+    Expected form:
+      | fork
+      branch
+      FROM ...           # or PIPELINE
+      TIMESERIES ...     # optional
+      || filter ...      # pipeline stages
+      ...
+      endbranch
+      branch
+      ...
+      endbranch
+      | endfork
+
+    Notes:
+      - Inside a branch, pipeline stages must start with `||`.
+      - The fork block ends at a top-level line `| endfork` (or `endfork`).
+      - Merge blocks are allowed inside branches (they use normal `|` internally).
+    """
+    queries: list[Query] = []
+    i = idx
+    while i < len(lines):
+        line = lines[i]
+        control = line
+        if control.startswith("|") and not control.startswith("||"):
+            control = control[1:].strip()
+
+        if control.lower() == "branch":
+            i += 1
+            branch_lines: list[str] = []
+            in_merge_block = False
+            while i < len(lines):
+                l2 = lines[i]
+                control2 = l2
+                if control2.startswith("|") and not control2.startswith("||"):
+                    control2 = control2[1:].strip()
+
+                # Allow an optional `|| endmerge` terminator inside a branch.
+                if l2.startswith("||") and l2[2:].strip().lower() == "endmerge":
+                    control2 = "endmerge"
+
+                if control2.lower() == "endmerge" and in_merge_block:
+                    in_merge_block = False
+
+                if control2.lower() == "endbranch":
+                    i += 1
+                    break
+
+                # Detect merge block start (the merge header stage itself is `|| merge ...`).
+                if l2.startswith("||") and l2[2:].lstrip().lower().startswith("merge "):
+                    in_merge_block = True
+
+                if l2.startswith("|") and not l2.startswith("||") and not in_merge_block:
+                    raise DslParseError(
+                        "Inside fork branch, pipeline stages must start with '||'"
+                    )
+
+                if l2.startswith("||"):
+                    branch_lines.append("|" + l2[2:])
+                else:
+                    branch_lines.append(l2)
+                i += 1
+
+            if not branch_lines:
+                raise DslParseError("Empty branch in fork")
+
+            queries.append(parse("\n".join(branch_lines)))
+            continue
+
+        if control.lower().startswith("endfork") or line.lower().startswith("| endfork"):
+            return queries, i + 1
+
+        raise DslParseError(f"Unexpected line in fork block: {line}")
+
+    raise DslParseError("fork block missing '| endfork'")
+
+
 def _parse_raw_json_object(text: str) -> dict[str, Any]:
     s = text.strip()
     if not (s.startswith("{") and s.endswith("}")):
@@ -589,6 +762,19 @@ def _parse_raw_json_object(text: str) -> dict[str, Any]:
         raise DslParseError(f"Invalid JSON in raw stage: {e}") from e
     if not isinstance(val, dict):
         raise DslParseError("raw stage JSON must be an object")
+    return val
+
+
+def _parse_raw_json_array(text: str) -> list[Any]:
+    s = text.strip()
+    if not (s.startswith("[") and s.endswith("]")):
+        raise DslParseError("fork stage must be a JSON array: | fork [ ... ]")
+    try:
+        val = json.loads(s)
+    except json.JSONDecodeError as e:
+        raise DslParseError(f"Invalid JSON in fork stage: {e}") from e
+    if not isinstance(val, list):
+        raise DslParseError("fork stage JSON must be an array")
     return val
 
 
@@ -646,6 +832,55 @@ def _parse_raw_json_object_multiline(
     return _parse_raw_json_object(candidate), next_idx
 
 
+def _parse_raw_json_array_multiline(
+    first_fragment: str,
+    lines: list[str],
+    next_idx: int,
+) -> tuple[list[Any], int]:
+    """Parse a raw JSON array that may span multiple lines.
+
+    The first fragment is the text after `fork` on the current pipe line.
+    Continuation lines are consumed until a full JSON array is balanced.
+    Returns (parsed_array, next_index_after_consumed_lines).
+    """
+    buf = [first_fragment]
+    candidate = "\n".join(buf).strip()
+
+    def balanced_json_array(s: str) -> bool:
+        s = s.strip()
+        if not s.startswith("["):
+            return False
+        in_quotes = False
+        escape = False
+        depth = 0
+        for ch in s:
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_quotes = not in_quotes
+                continue
+            if in_quotes:
+                continue
+            if ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+        return depth == 0 and s.endswith("]")
+
+    while candidate and not balanced_json_array(candidate) and next_idx < len(lines):
+        if _PIPE_RE.match(lines[next_idx]):
+            break
+        buf.append(lines[next_idx])
+        next_idx += 1
+        candidate = "\n".join(buf).strip()
+
+    return _parse_raw_json_array(candidate), next_idx
+
+
 def _parse_brace_map(text: str, *, context: str) -> dict[str, str]:
     s = text.strip()
     if not (s.startswith("{") and s.endswith("}")):
@@ -675,6 +910,7 @@ def _split_by_comma_respecting_groups(text: str) -> list[str]:
     escape = False
     paren_depth = 0
     bracket_depth = 0
+    brace_depth = 0
 
     def flush() -> None:
         s = "".join(buf).strip()
@@ -704,8 +940,12 @@ def _split_by_comma_respecting_groups(text: str) -> list[str]:
                 bracket_depth += 1
             elif ch == "]" and bracket_depth > 0:
                 bracket_depth -= 1
+            elif ch == "{":
+                brace_depth += 1
+            elif ch == "}" and brace_depth > 0:
+                brace_depth -= 1
 
-            if ch == "," and paren_depth == 0 and bracket_depth == 0:
+            if ch == "," and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0:
                 flush()
                 buf = []
                 continue
@@ -746,27 +986,10 @@ def _parse_group(text: str) -> _GroupFields:
 
     # support comma-separated assignments inside fields block
     # Each assignment: alias=agg(arg)
-    assignments: list[str] = []
-    buf: list[str] = []
-    in_quotes = False
-    depth = 0
-    for ch in fields_text:
-        if ch == '"':
-            in_quotes = not in_quotes
-        if not in_quotes:
-            if ch == "(":
-                depth += 1
-            elif ch == ")":
-                depth = max(0, depth - 1)
-            elif ch == "," and depth == 0:
-                assignments.append("".join(buf).strip())
-                buf = []
-                continue
-        buf.append(ch)
-    if buf:
-        assignments.append("".join(buf).strip())
+    # arg may be a scalar (field/expression), the literal `null`, or an object map `{ k=v, ... }`.
+    assignments = _split_by_comma_respecting_groups(fields_text)
 
-    fields: list[tuple[str, str, str | None]] = []
+    fields: list[tuple[str, str, Any]] = []
     for a in assignments:
         if not a:
             continue
@@ -779,7 +1002,9 @@ def _parse_group(text: str) -> _GroupFields:
         agg = em.group("agg")
         arg = em.group("arg").strip()
         if arg.lower() == "null":
-            arg_val: str | None = None
+            arg_val: Any = None
+        elif arg.startswith("{"):
+            arg_val = _parse_brace_map(arg, context=f"group {alias}={agg}(...) argument")
         else:
             arg_val = arg
         fields.append((alias, agg, arg_val))

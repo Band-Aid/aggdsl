@@ -135,6 +135,24 @@ def _compile_stage(stage: Stage, *, now_ms: int | None) -> dict[str, Any]:
     if stage.kind == "bulkExpand":
         return {"bulkExpand": dict(stage.payload)}
 
+    if stage.kind == "fork":
+        # Two forms are supported:
+        # - Inline JSON array: `| fork [ ... ]` -> payload is a list of JSON values.
+        # - Fork block: `| fork` with `branch ... endbranch` blocks -> payload is list[Query].
+        if isinstance(stage.payload, list) and all(isinstance(x, Query) for x in stage.payload):
+            fork_pipelines = [compile_pipeline(q, now_ms=now_ms) for q in stage.payload]
+            return {"fork": fork_pipelines}
+
+        if not isinstance(stage.payload, list):
+            raise CompileError("fork stage payload must be a JSON array or list of Queries")
+
+        return {"fork": stage.payload}
+
+    if stage.kind == "sessionReplays":
+        if not isinstance(stage.payload, dict):
+            raise CompileError("sessionReplays stage payload must be a JSON object")
+        return {"sessionReplays": dict(stage.payload)}
+
     if stage.kind == "switch":
         out_var = stage.payload["out"]
         field = stage.payload["field"]

@@ -83,18 +83,61 @@ Recommended:
 
 - `python -m tools.pendo.chart result.json --summary`
 
+### 5) Lookup segments
+
+- Script: `tools/pendo/lookup_segments.py`
+- Input: Optional search term and appId
+- Output: List of segment IDs and names
+
+The Pendo Aggregation API does not provide a `segments` source, so use the REST API instead.
+
+Examples:
+
+- `python tools/pendo/lookup_segments.py` - List all segments
+- `python tools/pendo/lookup_segments.py 'JAPAN'` - Search for segments containing "JAPAN"
+- `python tools/pendo/lookup_segments.py 'paying' -323232` - Search with specific appId
+
+Recommended:
+
+- `python -m tools.pendo.lookup_segments "search term"`
+
+The script requires `PENDO_API_KEY` environment variable and uses the REST API endpoint:
+`https://app.pendo.io/api/v1/segment`
+
+Once you have the segment ID, use it in your DSL queries:
+
+```dsl
+PIPELINE
+| pes {"appId":-323232,"segment":{"id":"SEGMENT_ID_HERE"},"dayCount":-30}
+```
+
+Or with FROM queries:
+
+```dsl
+FROM event([source=events,appId=-323232])
+TIMESERIES period=dayRange first=now()-30 count=30
+| segment id="SEGMENT_ID_HERE"
+| group by visitorId fields { totalEvents=sum(numEvents) }
+```
+
 ## Agent workflow (how to use this skill)
 
 1. Ask clarifying questions only if required fields are unknown (e.g., appId, product area definition).
-2. Generate a DSL query that matches the spec sheet.
-3. Compile DSL and validate:
-   - `python tools/pendo/dsl_compile.py query.dsl > body.json`
-   - `python tools/pendo/validate.py body.json`
-4. Run the aggregation:
-   - `python tools/pendo/run_agg.py body.json > result.json`
-5. If the request fails, iterate up to 5 times:
+2. **If segment filtering is needed**: Use `tools/pendo/lookup_segments.py` to find the segment ID by name.
+3. Generate a DSL query that matches the spec sheet.
+
+Notes:
+- PES requests use `PIPELINE` mode with a `| pes { ... }` stage (PES replaces the normal `FROM` source stage).
+- **All output files must be saved to `./results/` directory**. Create the directory if it doesn't exist.
+
+4. Compile DSL and validate:
+   - `python tools/pendo/dsl_compile.py query.dsl > results/body.json`
+   - `python tools/pendo/validate.py results/body.json`
+5. Run the aggregation:
+   - `python tools/pendo/run_agg.py query.dsl > results/result.json`
+6. If the request fails, iterate up to 5 times:
    - adjust DSL, recompile, re-run
    - use the exact error message from the previous attempt to guide the fix
-6. Summarize and chart:
-   - `python tools/pendo/chart.py result.json --summary`
-   - optionally produce a Vega spec via `--vega`
+7. Summarize and chart:
+   - `python tools/pendo/chart.py results/result.json --summary`
+   - optionally produce a Vega spec: `python tools/pendo/chart.py results/result.json --vega --x field --y metric > results/chart.vega.json`

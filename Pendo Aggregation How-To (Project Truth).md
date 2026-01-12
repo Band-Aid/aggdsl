@@ -2,6 +2,8 @@
 
 This guide shows engineers and analysts how to write valid Pendo Aggregation requests for this project, based strictly on the implemented DSL/parser/compiler. It covers the end-to-end flow from DSL to JSON, with step-by-step instructions and examples.
 
+For comprehensive session replay query patterns and enrichment examples, see [SESSION_REPLAY_EXAMPLES.md](SESSION_REPLAY_EXAMPLES.md).
+
 ## 1) Decide your entry mode
 You MUST choose exactly one of:
 
@@ -204,6 +206,63 @@ Example:
 | raw {"someStage": {"any": "json"}}
 ```
 
+### 4.18 SessionReplays (dedicated stage)
+The `sessionReplays` stage retrieves a list of session replay recordings with optional event details and frustration metrics.
+
+```
+| sessionReplays { limit=100, frustration=[deadClicks,rageClicks,errorClicks], events=true }
+```
+
+**Parameters:**
+- `limit` (integer, optional): Maximum number of session replays to return. Default is no limit.
+- `frustration` (list of strings, optional): Include frustration type metrics. Options: `deadClicks`, `rageClicks`, `errorClicks`, `uTurns`.
+- `events` (boolean, optional): Include the full list of individual events that occurred within each session replay.
+
+**Available Output Fields:**
+- `visitorId`: Unique visitor identifier
+- `recordingSessionId`: Unique session replay identifier
+- `recordingId`: Recording identifier
+- `startTime`, `endTime`: Session timestamps
+- `browserTime`: Browser-reported time
+- `duration`: Session duration (in milliseconds)
+- `numEvents`: Total number of events in the session
+- `deadClickCount`, `rageClickCount`, `errorClickCount`: Frustration metrics
+- `events`: Array of event objects (only if `events=true`)
+
+**Event Object Structure (when events=true):**
+Each event in the events array contains:
+- `type`: Event type (e.g., "click", "load", "focus")
+- `eventId`: Unique event identifier
+- `browserTime`: Event timestamp
+- `url`: Page URL where event occurred
+- `elementPath`: CSS path to element (for interactions)
+- `pageId`, `featureId`: Tagged page/feature identifiers (if available)
+- `frustrationTypes`: List of frustration types associated with event (e.g., ["deadClick"], ["rageClick"])
+
+**Examples:**
+
+Get top 50 session replays with frustration metrics:
+```
+PIPELINE
+| sessionReplays { limit=50, frustration=[deadClicks,rageClicks,errorClicks] }
+```
+
+Get a specific session replay with all its events:
+```
+FROM event([source=recordingMetadata])
+| filter recordingSessionId == "gKl6cyh9yr7trX3Z"
+| sessionReplays { limit=1, events=true }
+```
+
+Combine session metadata with event details and frustration:
+```
+FROM event([source=recordingMetadata])
+TIMESERIES period=dayRange first=now() count=7
+| filter visitorId == "r76sptuclul"
+| sessionReplays { limit=100, frustration=[deadClicks,rageClicks], events=true }
+| sort -numEvents
+```
+
 ## 5) Add optional headers
 Headers must appear before `FROM` or `PIPELINE`:
 
@@ -286,3 +345,152 @@ JSON:
   }
 }
 ```
+
+
+## 9) Session Replays Examples
+
+### Example 1: List sessions with frustration metrics
+
+Get the 50 most recent session replays with frustration indicators:
+
+DSL:
+```
+REQUEST name="SessionReplaysWithFrustration"
+PIPELINE
+| sessionReplays { limit=50, frustration=[deadClicks,rageClicks,errorClicks] }
+| sort -startTime
+```
+
+### Example 2: Get detailed events within a specific session
+
+To retrieve individual events from a session replay with detailed event-level information, use the `singleEvents` source:
+
+DSL:
+```
+REQUEST name="SessionReplayEventDetails"
+FROM event([source=singleEvents])
+| filter recordingSessionId == "gKl6cyh9yr7trX3Z"
+| sort -browserTime
+```
+
+The `singleEvents` source provides event-level details for a recorded session, including:
+- visitorId, accountId, appId
+- hour, day, week, month, quarter (time bucketing)
+- numEvents, numMinutes (aggregates per bucket)
+- remoteIp, server, userAgent, tabId
+- recordingSessionId (links to the session replay)
+- properties (custom event properties)
+
+This allows you to analyze individual events within a session replay with full event-level granularity.
+
+### Example 3: Comprehensive session replay analysis with enrichment
+
+Get session-level details enriched with frustration metrics and guide data using merges:
+
+DSL:
+```
+REQUEST name="SessionReplayAnalysisEnriched"
+FROM event([source=recordingMetadata,appId=-323232,blacklist=apply])
+TIMESERIES period=dayRange first=now() count=30
+| filter recordingSessionId != ""
+| filter !isBroken
+| group by visitorId,accountId,recordingSessionId fields { startTime=min(startTime), endTime=max(endTime), duration=max(endTime)-min(startTime), eventCount=sum(rrwebEventCount), rageClickCount=sum(rageClickCount), deadClickCount=sum(deadClickCount) }
+| merge fields [visitorId,accountId,recordingSessionId] mappings { guideIds=guideIds, autoActivatedGuideCount=autoActivatedGuideCount }
+FROM event([source=guideEvents,appId=-323232,blacklist=apply])
+TIMESERIES period=dayRange first=now() count=30
+|| filter recordingSessionId != ""
+|| filter type == "guideSeen"
+|| group by visitorId,accountId,recordingSessionId fields { guideIds=list(guideId), autoActivatedGuideCount=countIf(if(guideSeenReason=="auto",guideId,null)) }
+endmerge
+| sort -startTime
+| limit 100
+```
+
+This approach:
+1. Starts with `recordingMetadata` to get session-level metrics
+2. Groups by session identifiers to aggregate data
+3. Merges with `guideEvents` to add guide interaction data
+4. Can include additional merges with `featureEvents`, `pollEvents`, etc.
+
+### Example 4: Get individual event details from a session
+
+To retrieve individual events (not grouped), use `singleEvents` source and filter by `recordingSessionId`:
+
+DSL:
+```
+REQUEST name="SessionEventDetails"
+FROM event([source=singleEvents])
+| filter recordingSessionId == "gKl6cyh9yr7trX3Z"
+| sort -browserTime
+| limit 1000
+```
+
+The `singleEvents` source provides:
+- visitorId, accountId, appId
+- browserTime, userAgent, remoteIp
+- numEvents, numMinutes (per time bucket)
+- recordingSessionId (link to session)
+- Custom properties attached to events
+
+### Example 5: Filter sessions by quality metrics
+
+Find sessions with sufficient activity and valid recordings:
+
+DSL:
+```
+REQUEST name="QualitySessionFilter"
+FROM event([source=recordingMetadata,appId=-323232,blacklist=apply])
+TIMESERIES period=dayRange first=now() count=30
+| filter recordingSessionId != ""
+| filter !isBroken
+| filter rrwebEventCount > 2
+| group by visitorId,accountId,recordingSessionId fields { eventCount=sum(rrwebEventCount), startTime=min(startTime), endTime=max(endTime) }
+| eval { duration=endTime-startTime }
+| filter duration >= 300
+| sort -startTime
+| limit 500
+```
+
+This ensures you're analyzing valid, complete sessions with meaningful activity.
+
+### Example 6: Multi-source enrichment pattern
+
+Merge session metadata with multiple event sources for comprehensive analysis:
+
+DSL:
+```
+REQUEST name="SessionWithFeatureEvents"
+FROM event([source=recordingMetadata,appId=-323232,blacklist=apply])
+TIMESERIES period=dayRange first=now() count=30
+| filter recordingSessionId != ""
+| group by visitorId,accountId,recordingSessionId fields { sessionStart=min(startTime), sessionEnd=max(endTime), sessionEvents=sum(rrwebEventCount), rageClicks=sum(rageClickCount), deadClicks=sum(deadClickCount) }
+| merge fields [visitorId,accountId,recordingSessionId] mappings { featureFrustration=frustration }
+FROM event([source=featureEvents,appId=-323232,blacklist=apply,ignoreFrustration=only])
+TIMESERIES period=dayRange first=now() count=30
+|| filter recordingSessionId != ""
+|| group by visitorId,accountId,recordingSessionId fields { frustration=sum(rageClickCount)+sum(deadClickCount)+sum(errorClickCount) }
+endmerge
+| sort -sessionStart
+```
+
+This pattern allows you to enrich session data with frustration counts from feature interactions.
+
+### Example 7: Session data with visitor and account enrichment
+
+Enrich session data with account information via bulkExpand:
+
+DSL:
+```
+REQUEST name="SessionsWithAccountData"
+FROM event([source=recordingMetadata,appId=-323232,blacklist=apply])
+TIMESERIES period=dayRange first=now() count=30
+| filter recordingSessionId != ""
+| group by visitorId,accountId,recordingSessionId fields { startTime=min(startTime), endTime=max(endTime), events=sum(rrwebEventCount), rageClicks=sum(rageClickCount), deadClicks=sum(deadClickCount), errorClicks=sum(errorClickCount) }
+| bulkExpand { account={ account=accountId } }
+| eval { accountName=account.auto.name, accountPlan=account.metadata.custom.plan }
+| select { visitorId=visitorId, accountId=accountId, accountName=accountName, recordingSessionId=recordingSessionId, startTime=startTime, endTime=endTime, events=events, rageClicks=rageClicks, deadClicks=deadClicks }
+```
+
+The `bulkExpand` stage joins with account data to enrich each session record.
+
+````

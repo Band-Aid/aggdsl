@@ -140,6 +140,26 @@ Event sources (time series, activity-based)
   - Behavior: grouped source.
   - Typical uses: email performance, open/click analysis, email-driven adoption.
 
+- recordingMetadata
+  - Summary: Session Replay recording/session metadata over a time window.
+  - Behavior: event source; used to enumerate and analyze replay sessions/recordings and their characteristics.
+  - Typical uses: finding candidate session replays, drilling into a specific `recordingSessionId`, building timelines and session-level rollups, grouping by session identifiers for aggregated metrics.
+  - Complete pattern: Start with `recordingMetadata` as source, group by `recordingSessionId` to aggregate session metrics, optionally merge with `featureEvents`, `guideEvents`, `pollEvents` to enrich with cross-source data. Use `singleEvents` source if you need individual (non-grouped) event details within a session.
+  - Observed params (not enforced by DSL):
+    - `appId` (int or array)
+    - `blacklist` (string, e.g. `ignore`, `apply`)
+
+- agenticEvents
+  - Summary: AI Agent event stream (AiAgents) capturing agent-related interactions such as prompts.
+  - Behavior: event source over a time window; returns one row per event.
+  - Typical uses: agent prompt audits, troubleshooting, “what did the agent see/say” timelines.
+  - Observed params (not enforced by DSL):
+    - `agentId` (string)
+    - `appId` (int) — observed as required for results in practice
+    - `blacklist` (string, e.g. `apply`)
+  - Example request (from user):
+    - Source stage: `{ "source": { "agenticEvents": {"blacklist":"apply","appId":6304859583021056,"agentId":"..."}, "timeSeries": {"period":"dayRange","first":"dateAdd(startOfPeriod(\"daily\", now()), -30, \"days\")","count":30} } }`
+
 Major columns by source (external reference)
 - The following column lists are provided by the user from external documentation and are not validated by this codebase. Field availability may vary by subscription and source configuration. (source: user-provided external reference)
 - visitors: visitorld, metadata, metadata.auto.accountid, metadata.auto.accountids, metadata.auto.firstvisit, metadata.auto.lastvisit, metadata.auto.lastbrowsername, metadata.auto.lastbrowserversion, metadata.auto.lastoperatingsystem, metadata.auto.lastservername, metadata.auto.lastupdated, metadata.auto.lastuseragent, metadata.auto_*.*, metadata.agent.*, metadata.custom.*, metadata.salesforce.*, metadata.hubspot.*, metadata.segmentio.*
@@ -157,8 +177,10 @@ Major columns by source (external reference)
 - pollEvents: visitorld, accountId, appId, browserTime, type, guideId, guideStepId, pollId, pollType, pollResponse, language, remoteIp, serverName, country, region, latitude, longitude, tabId, url, userAgent, properties
 - guidesSeen: visitorld, guideId, guideStepId, firstSeenAt, lastAdvancedAutoAt, lastDismissedAutoAt, lastSeenAt, lastTimeoutAt, seenCount, lastState
 - pollsSeen: visitorld, guideId, pollId, time, pollResponse
-- singleEvents: visitorld, accountId, appId, hour, day, week, month, quarter, numEvents, numMinutes, remoteIp, server, userAgent, tabId, properties
+- singleEvents: visitorld, accountId, appId, hour, day, week, month, quarter, numEvents, numMinutes, remoteIp, server, userAgent, tabId, properties, recordingSessionId
 - emailEvents: WIP
+- recordingMetadata (observed): visitorId, accountId, appId, tabId, recordingId, recordingSessionId, startTime, endTime, minBrowserTime, maxBrowserTime, recordingSize, recordingRrwebEventCount, isBroken, isSessionStart, activityTimelineTimestamps, recordingFirstActiveTs, recordingLastActiveTs, recordingInactivityPeriodStartTimes, recordingInactivityPeriodEndTimes, recordingStartTime, recordingEndTime, recordingLastMobileState
+- agenticEvents : visitorId, accountId, eventId, content, browserTime
 
 D. Pipeline Stages (catalog)
 General rules
@@ -198,6 +220,18 @@ Stage catalog (DSL -> JSON)
   - DSL (list form): `| group by a,b fields { x=sum(y), z=count(null) }`
   - JSON: `{ "group": { "group": ["a", "b"], "fields": [ {"x": {"sum": "y"}}, {"z": {"count": null}} ] } }`
   - DSL (map form): `| group by a,b fields map { x=sum(y) }`
+  - DSL (object arg): aggregate args may be an object map for aggregators that require structured configs.
+    - Example: `inactivityPeriods=inactivityPeriods({ recordingStartTime=recordingStartTime, recordingEndTime=recordingEndTime, appId=appId })`
+
+- fork
+  - Purpose: split the current stream into multiple independent pipelines.
+  - JSON: `{ "fork": [ <pipeline1>, <pipeline2>, ... ] }` where each `<pipelineN>` is a JSON array of stages.
+  - DSL (inline JSON array): `| fork [ ... ]`
+  - DSL (block form, no JSON):
+    - `| fork`
+    - `branch` / `endbranch` blocks containing an inner query
+    - stages inside branches use `||` prefixes
+    - terminates with `| endfork`
   - JSON: `{ "group": { "group": ["a", "b"], "fields": { "x": {"sum": "y"} } } }`
   - Aggregate name must match `[A-Za-z_][A-Za-z0-9_]*`; argument is raw string, `null` maps to JSON null. (sources: `src/aggdsl/parser.py:_parse_group`, `src/aggdsl/compiler.py:_compile_stage`)
 - merge (block)
@@ -234,10 +268,20 @@ Stage catalog (DSL -> JSON)
   - DSL: `| bulkExpand { ...json... }` (JSON object)
   - JSON: `{ "bulkExpand": { ... } }`
   - Supports multi-line JSON objects as long as continuation lines do not start with `|`. (sources: `src/aggdsl/parser.py:_parse_stage`, `src/aggdsl/parser.py:_parse_raw_json_object_multiline`, `src/aggdsl/compiler.py:_compile_stage`)
+
+- sessionReplays
+  - DSL: `| sessionReplays { ...json... }` (JSON object)
+  - JSON: `{ "sessionReplays": { ... } }`
+  - Supports multi-line JSON objects as long as continuation lines do not start with `|`. (sources: `src/aggdsl/parser.py:_parse_stage`, `src/aggdsl/parser.py:parse`, `src/aggdsl/parser.py:_parse_raw_json_object_multiline`, `src/aggdsl/compiler.py:_compile_stage`)
 - raw
   - DSL: `| raw { ...json... }` (JSON object)
   - JSON: the object itself (passed through exactly).
   - Supports multi-line JSON objects as long as continuation lines do not start with `|`. (sources: `src/aggdsl/parser.py:_parse_stage`, `src/aggdsl/parser.py:_parse_raw_json_object_multiline`, `src/aggdsl/compiler.py:_compile_stage`)
+
+- fork
+  - DSL: `| fork [ ...json... ]` (JSON array)
+  - JSON: `{ "fork": [ ... ] }`
+  - Supports multi-line JSON arrays as long as continuation lines do not start with `|`. (sources: `src/aggdsl/parser.py:_parse_stage`, `src/aggdsl/parser.py:parse`, `src/aggdsl/parser.py:_parse_raw_json_array_multiline`, `src/aggdsl/compiler.py:_compile_stage`)
 
 E. Expressions & Field Paths
 - Expressions are not parsed or validated; they are stored and emitted as raw strings in JSON. This applies to:
@@ -471,6 +515,8 @@ Allowed grammar (DSL)
   - `unwind { field=list, index=idx, keepEmpty=True|False }`
   - `segment id="segmentId"` (also `segment { id=... }` or `segment segmentId`)
   - `bulkExpand { <json object> }`
+  - `fork [ <json array> ]`
+  - `sessionReplays { <json object> }`
   - `raw { <json object> }`
 
 Stage catalog (JSON output)
@@ -491,6 +537,8 @@ Stage catalog (JSON output)
 - unwind: `{ "unwind": { "field": "list", "index": "idx", "keepEmpty": true } }`
 - segment: `{ "segment": { "id": "segmentId" } }`
 - bulkExpand: `{ "bulkExpand": { ... } }`
+- fork: `{ "fork": [ ... ] }`
+- sessionReplays: `{ "sessionReplays": { ... } }`
 - raw: `{ "<anyStageKey>": ... }` (passes through exactly)
 
 Do/Don't

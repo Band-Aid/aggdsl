@@ -133,6 +133,24 @@ def _decompile_stage(stage: Any, *, prefix: str) -> list[str]:
     if not isinstance(stage, dict) or not stage:
         return [f"{prefix} raw {_json_one_line(stage)}"]
 
+    if "fork" in stage and len(stage) == 1 and isinstance(stage["fork"], list):
+        branches = stage["fork"]
+        # If it's a list-of-pipelines, prefer the block form.
+        if all(isinstance(b, list) for b in branches):
+            out: list[str] = [f"{prefix} fork"]
+            for branch in branches:
+                out.append("branch")
+                out.extend(_decompile_branch_pipeline(branch))
+                out.append("endbranch")
+            out.append("| endfork" if prefix == "|" else f"{prefix} endfork")
+            return out
+
+        # Otherwise fall back to the JSON-array form.
+        return [f"{prefix} fork {_json_one_line(branches)}"]
+
+    if "sessionReplays" in stage and len(stage) == 1 and isinstance(stage["sessionReplays"], dict):
+        return [f"{prefix} sessionReplays {_json_one_line(stage['sessionReplays'])}"]
+
     if "filter" in stage and len(stage) == 1:
         return [f"{prefix} filter {stage['filter']}"]
 
@@ -227,6 +245,8 @@ def _decompile_stage(stage: Any, *, prefix: str) -> list[str]:
                 arg = agg_obj[agg]
                 if arg is None:
                     agg_parts.append(f"{alias}={agg}(null)")
+                elif isinstance(arg, dict):
+                    agg_parts.append(f"{alias}={agg}({_format_brace_map(arg)})")
                 else:
                     agg_parts.append(f"{alias}={agg}({arg})")
             if ok:
@@ -243,6 +263,8 @@ def _decompile_stage(stage: Any, *, prefix: str) -> list[str]:
                 arg = agg_obj[agg]
                 if arg is None:
                     agg_parts.append(f"{alias}={agg}(null)")
+                elif isinstance(arg, dict):
+                    agg_parts.append(f"{alias}={agg}({_format_brace_map(arg)})")
                 else:
                     agg_parts.append(f"{alias}={agg}({arg})")
             return [
