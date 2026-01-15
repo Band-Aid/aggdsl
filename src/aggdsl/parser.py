@@ -260,6 +260,15 @@ def parse(dsl: str) -> Query:
             stage_text, idx = _consume_multiline_brace_stage(stage_text, lines, idx + 1)
             stages.append(_parse_stage(stage_text))
             continue
+
+        # Multiline select stage support.
+        # Allows formatting the `{ ... }` mapping across multiple lines.
+        if stage_text.lower().startswith("select ") and "{" in stage_text and not _balanced_braces(
+            stage_text
+        ):
+            stage_text, idx = _consume_multiline_brace_stage(stage_text, lines, idx + 1)
+            stages.append(_parse_stage(stage_text))
+            continue
         # Spawn block support.
         if stage_text.lower() == "spawn":
             spawn_queries, idx = _parse_spawn_block(lines, idx + 1)
