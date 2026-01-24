@@ -499,6 +499,12 @@ def _parse_stage(text: str) -> Stage:
         obj = _parse_raw_json_object(rest)
         return Stage(kind="sessionReplays", payload=obj)
 
+    # pes { ...json... }
+    if text.lower().startswith("pes "):
+        rest = text[len("pes ") :].strip()
+        obj = _parse_raw_json_object(rest)
+        return Stage(kind="pes", payload=obj)
+
     # raw { ...json... }
     if text.lower().startswith("raw "):
         obj = _parse_raw_json_object(text[len("raw ") :].strip())

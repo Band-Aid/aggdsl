@@ -153,6 +153,11 @@ def _compile_stage(stage: Stage, *, now_ms: int | None) -> dict[str, Any]:
             raise CompileError("sessionReplays stage payload must be a JSON object")
         return {"sessionReplays": dict(stage.payload)}
 
+    if stage.kind == "pes":
+        if not isinstance(stage.payload, dict):
+            raise CompileError("pes stage payload must be a JSON object")
+        return {"pes": dict(stage.payload)}
+
     if stage.kind == "switch":
         out_var = stage.payload["out"]
         field = stage.payload["field"]

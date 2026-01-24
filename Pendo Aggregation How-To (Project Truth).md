@@ -46,7 +46,9 @@ JSON emitted:
 
 Rules:
 - `first` and `last` can be integers, `now()`, or any raw expression string.
-- `count` can be negative and will be preserved.
+- `count` is a signed number and will be preserved.
+  - `period=dayRange first=now() count=-30` means 30 days before now.
+  - `period=dayRange first=now() count=30` means 30 days after now.
 
 Example (count form):
 ```

@@ -332,7 +332,9 @@ F. Time Series & Date Handling
   - Any other raw expression string (e.g., `date(2025, 1, 1, 12, 30, 00)`).
   (sources: `src/aggdsl/parser.py:_coerce_time_value`, `src/aggdsl/compiler.py:compile_pipeline`)
 - If `now_ms` is provided to `compile_to_pendo_aggregation`, literal `now()` is replaced by that integer. Otherwise it is preserved as the string `"now()"`. (source: `src/aggdsl/compiler.py:compile_pipeline`)
-- Negative `count` values are accepted and preserved. (source: `tests/test_timeseries_negative_count.py`)
+- `count` is a signed number. Negative values are accepted and preserved. (source: `tests/test_timeseries_negative_count.py`)
+  - Example: `period=dayRange first=now() count=-30` means 30 days before now.
+  - Example: `period=dayRange first=now() count=30` means 30 days after now.
 - Period values are passed through as raw strings; no validation occurs. (source: `src/aggdsl/parser.py:parse`)
 
 G. Validation & Errors
@@ -353,7 +355,11 @@ G. Validation & Errors
   - Unknown stage kind (if parser somehow emits an unsupported kind). (source: `src/aggdsl/compiler.py:_compile_stage`)
 - CLI behavior: errors are printed to stderr with prefix `error:` and exit code 2. (source: `src/aggdsl/cli.py:main`)
 
-H. Examples (at least 5, increasing complexity)
+H. Field notes & pitfalls (observed in practice)
+- Filter language: the API rejects `in [...]`; use explicit equality chains with `||` (e.g., `field == "a" || field == "b"`).
+- Session detail breakdown: `singleEvents` returned empty aggregates when grouped by `recordingSessionId`; `pageEvents` or `events` are safer for per-session aggregates (dead/error/rage/uTurn, pageId).
+
+I. Examples (at least 5, increasing complexity)
 
 Example 1: Minimal source + select
 DSL:
@@ -487,7 +493,34 @@ JSON:
 ```
 (source: `tests/test_spawn_and_switch.py`)
 
-I. Downstream Agent Instructions (the part that will be used as a system prompt)
+Example 6: Top error-heavy sessions (events source)
+DSL:
+```
+RESPONSE mimeType=application/json
+REQUEST name="TopErrorSessionsLast30Days"
+FROM event([source=events,appId=5767130939129856,blacklist="apply"])
+TIMESERIES period=dayRange first=dateAdd(startOfPeriod("daily", now()), -30, "days") count=30
+| filter !isNull(recordingSessionId)
+| group by recordingSessionId fields { events=sum(numEvents), minutes=sum(numMinutes), errorClicks=sum(errorClickCount), deadClicks=sum(deadClickCount), rageClicks=sum(rageClickCount), uTurns=sum(uTurnCount) }
+| eval { errorScore=errorClicks + rageClicks + deadClicks + uTurns }
+| sort -errorScore
+| limit 10
+```
+
+Example 7: Page-level friction for specific sessions (pageEvents + OR filter)
+DSL:
+```
+RESPONSE mimeType=application/json
+REQUEST name="ErrorSessionDetailsTop3"
+FROM event([source=pageEvents,appId=5767130939129856,blacklist="apply"])
+TIMESERIES period=dayRange first=dateAdd(startOfPeriod("daily", now()), -30, "days") count=30
+| filter recordingSessionId == "CwXPili73WV555Zm" || recordingSessionId == "gKl6cyh9yr7trX3Z" || recordingSessionId == "SpsL1Xg6hFo7vlI3"
+| group by recordingSessionId,pageId fields { events=sum(numEvents), errorClicks=sum(errorClickCount), deadClicks=sum(deadClickCount), rageClicks=sum(rageClickCount), uTurns=sum(uTurnCount) }
+| sort -events
+| limit 200
+```
+
+J. Downstream Agent Instructions (the part that will be used as a system prompt)
 You MUST generate DSL or JSON that matches the exact structures below. Do not invent stages or fields.
 
 Allowed grammar (DSL)

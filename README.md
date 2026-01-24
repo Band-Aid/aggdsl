@@ -45,6 +45,8 @@ TIMESERIES period=dayRange first=1731769200000 count=180
 | group by pageId,parameters.parameter fields { numEvents=sum(numEvents) }
 | sort -numEvents
 | limit 100
+
+Note: `count` is signed. With `first=now()`, `count=-30` means 30 days before now and `count=30` means 30 days after now.
 ```
 
 ## Advanced: spawn and switch

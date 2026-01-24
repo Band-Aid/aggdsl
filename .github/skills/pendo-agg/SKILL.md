@@ -115,7 +115,7 @@ Or with FROM queries:
 
 ```dsl
 FROM event([source=events,appId=-323232])
-TIMESERIES period=dayRange first=now()-30 count=30
+TIMESERIES period=dayRange first=now() count=30
 | segment id="SEGMENT_ID_HERE"
 | group by visitorId fields { totalEvents=sum(numEvents) }
 ```
