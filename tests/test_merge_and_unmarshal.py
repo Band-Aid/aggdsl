@@ -32,6 +32,18 @@ def test_merge_stage_compiles() -> None:
     }
 
 
+def test_from_event_parses_non_empty_list_params() -> None:
+    dsl = """\
+FROM event([source=singleEvents,appId=[1,2]])
+| limit 1
+"""
+
+    body = compile_to_pendo_aggregation(parse(dsl))
+    assert body["request"]["pipeline"][0] == {
+        "source": {"singleEvents": {"appId": [1, 2]}}
+    }
+
+
 def test_merge_stage_compiles_with_legacy_double_chevron() -> None:
     dsl = "\n".join(
         [
@@ -109,6 +121,28 @@ def test_unmarshal_stage_compiles() -> None:
 
     body = compile_to_pendo_aggregation(parse(dsl))
     assert body["request"]["pipeline"][0] == {"unmarshal": {"groups": "string"}}
+
+
+def test_nested_merge_blocks_parse_and_compile() -> None:
+    dsl = """\
+PIPELINE
+| merge fields [featureId]
+FROM event([source=featureEvents,appId={{APP_ID}},blacklist=apply])
+| group by featureId fields { totalVisitors=count(null) }
+| merge fields [featureId,visitorId]
+FROM event([source=featureEvents,appId={{APP_ID}},blacklist=apply])
+| group by featureId,visitorId fields { currentEvents=sum(numEvents) }
+endmerge
+| filter currentEvents > 0
+endmerge
+"""
+
+    body = compile_to_pendo_aggregation(parse(dsl))
+    merge0 = body["request"]["pipeline"][0]["merge"]
+
+    assert merge0["fields"] == ["featureId"]
+    assert merge0["pipeline"][0]["source"]["featureEvents"]["appId"] == "{{APP_ID}}"
+    assert merge0["pipeline"][2]["merge"]["fields"] == ["featureId", "visitorId"]
 
 
 def test_decompile_merge_and_unmarshal_round_trip() -> None:
