@@ -54,3 +54,58 @@ def test_decompile_prefers_fork_block_when_possible() -> None:
     q2 = parse(dsl)
     body2 = compile_to_pendo_aggregation(q2)
     assert body2["request"]["pipeline"][1] == body["request"]["pipeline"][1]
+
+
+def test_fork_branch_can_contain_nested_fork_block() -> None:
+    dsl = """\
+PIPELINE
+| fork
+branch
+PIPELINE
+|| fork
+branch
+PIPELINE
+|| group by steps fields { count=count(null) }
+endbranch
+|| endfork
+endbranch
+| endfork
+"""
+
+    body = compile_to_pendo_aggregation(parse(dsl))
+    pipeline = body["request"]["pipeline"]
+
+    assert "fork" in pipeline[0]
+    outer_branch0 = pipeline[0]["fork"][0]
+    assert outer_branch0[0] == {
+        "fork": [
+            [
+                {
+                    "group": {
+                        "group": ["steps"],
+                        "fields": [{"count": {"count": None}}],
+                    }
+                }
+            ]
+        ]
+    }
+
+
+def test_fork_branch_allows_omitted_pipeline_when_starting_with_stage() -> None:
+    dsl = """\
+PIPELINE
+| fork
+branch
+|| fork
+branch
+|| limit 1
+endbranch
+|| endfork
+endbranch
+| endfork
+"""
+
+    body = compile_to_pendo_aggregation(parse(dsl))
+    pipeline = body["request"]["pipeline"]
+
+    assert pipeline[0] == {"fork": [[{"fork": [[{"limit": 1}]]}]]}

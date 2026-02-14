@@ -17,6 +17,7 @@ class DslParseError(ValueError):
 
 
 _WS_RE = re.compile(r"\s+")
+_MOUSTACHE_PLACEHOLDER_RE = re.compile(r"^\{\{[^{}]+\}\}$")
 
 
 def _strip_comment(line: str) -> str:
@@ -93,13 +94,58 @@ def _split_tokens_preserving_groups(text: str) -> list[str]:
 
 
 def _parse_scalar(token: str) -> Any:
-    if token.startswith('"') and token.endswith('"') and len(token) >= 2:
-        return token[1:-1]
-    if token == "[]":
+    tok = token.strip()
+    if _MOUSTACHE_PLACEHOLDER_RE.match(tok):
+        return tok
+    if tok.lower() == "true":
+        return True
+    if tok.lower() == "false":
+        return False
+    if tok.startswith("{") and tok.endswith("}"):
+        return _parse_inline_object(tok)
+    if tok.startswith('"') and tok.endswith('"') and len(tok) >= 2:
+        return tok[1:-1]
+    if tok.startswith("'") and tok.endswith("'") and len(tok) >= 2:
+        return tok[1:-1]
+    if tok.startswith("[") and tok.endswith("]"):
+        inner = tok[1:-1].strip()
+        if not inner:
+            return []
+        return [
+            _parse_scalar(part.strip())
+            for part in _split_by_comma_respecting_groups(inner)
+            if part.strip()
+        ]
+    if tok == "[]":
         return []
-    if token.isdigit() or (token.startswith("-") and token[1:].isdigit()):
-        return int(token)
-    return token
+    if tok.isdigit() or (tok.startswith("-") and tok[1:].isdigit()):
+        return int(tok)
+    return tok
+
+
+def _parse_inline_object(token: str) -> dict[str, Any]:
+    s = token.strip()
+    if not (s.startswith("{") and s.endswith("}")):
+        raise DslParseError(f"Expected object literal: {token}")
+    inner = s[1:-1].strip()
+    if not inner:
+        return {}
+
+    out: dict[str, Any] = {}
+    for item in _split_by_comma_respecting_groups(inner):
+        if not item:
+            continue
+        if "=" in item:
+            key, value = item.split("=", 1)
+        elif ":" in item:
+            key, value = item.split(":", 1)
+        else:
+            raise DslParseError(f"Expected key=value or key:value, got: {item}")
+
+        key_val = _parse_scalar(key.strip())
+        key_str = key_val if isinstance(key_val, str) else str(key_val)
+        out[key_str] = _parse_scalar(value.strip())
+    return out
 
 
 def _parse_bracket_args(text: str) -> dict[str, Any]:
@@ -324,6 +370,13 @@ def parse(dsl: str) -> Query:
             stages.append(Stage(kind="sessionReplays", payload=obj))
             continue
 
+        # Multiline pes stage support.
+        if stage_text.lower().startswith("pes "):
+            pes_start = stage_text[len("pes ") :].strip()
+            obj, idx = _parse_raw_json_object_multiline(pes_start, lines, idx + 1)
+            stages.append(Stage(kind="pes", payload=obj))
+            continue
+
         stages.append(_parse_stage(stage_text))
         idx += 1
 
@@ -427,8 +480,6 @@ def _parse_stage(text: str) -> Stage:
         if not jm:
             raise DslParseError("join syntax: | join fields [field1,field2]")
         fields = [f.strip() for f in jm.group("fields").split(",") if f.strip()]
-        if not fields:
-            raise DslParseError("join fields [...] cannot be empty")
         return Stage(kind="join", payload={"fields": fields})
 
     # switch outVar from field { "1"=="abc", "2"=="def" }
@@ -580,13 +631,24 @@ def _parse_merge_block(lines: list[str], idx: int) -> tuple[Query, int]:
     """
     inner_lines: list[str] = []
     i = idx
+    nested_merge_depth = 0
     while i < len(lines):
         line = lines[i]
         control = line
         if control.startswith("|") and not control.startswith("||"):
             control = control[1:].strip()
 
-        if control.lower() == "endmerge":
+        control_lower = control.lower()
+
+        if control_lower.startswith("merge "):
+            nested_merge_depth += 1
+
+        if control_lower == "endmerge":
+            if nested_merge_depth > 0:
+                nested_merge_depth -= 1
+                inner_lines.append(line)
+                i += 1
+                continue
             i += 1
             break
 
@@ -640,6 +702,7 @@ def _parse_spawn_block(lines: list[str], idx: int) -> tuple[list[Query], int]:
             i += 1
             branch_lines: list[str] = []
             in_merge_block = False
+            nested_branch_depth = 0
             while i < len(lines):
                 l2 = lines[i]
                 control2 = l2
@@ -653,9 +716,14 @@ def _parse_spawn_block(lines: list[str], idx: int) -> tuple[list[Query], int]:
                 if control2.lower() == "endmerge" and in_merge_block:
                     in_merge_block = False
 
-                if control2.lower() == "endbranch":
-                    i += 1
-                    break
+                if control2.lower() == "branch":
+                    nested_branch_depth += 1
+                elif control2.lower() == "endbranch":
+                    if nested_branch_depth > 0:
+                        nested_branch_depth -= 1
+                    else:
+                        i += 1
+                        break
 
                 # Detect merge block start (the merge header stage itself is `|| merge ...`).
                 if l2.startswith("||") and l2[2:].lstrip().lower().startswith("merge "):
@@ -668,13 +736,22 @@ def _parse_spawn_block(lines: list[str], idx: int) -> tuple[list[Query], int]:
                         "Inside spawn branch, pipeline stages must start with '||'"
                     )
                 if l2.startswith("||"):
-                    branch_lines.append("|" + l2[2:])
+                    if nested_branch_depth == 0:
+                        branch_lines.append("|" + l2[2:])
+                    else:
+                        branch_lines.append(l2)
                 else:
                     branch_lines.append(l2)
                 i += 1
 
             if not branch_lines:
                 raise DslParseError("Empty branch in spawn")
+
+            # Allow branch pipelines that start directly with stages (e.g. `|| filter ...`)
+            # without an explicit `PIPELINE` line.
+            first_line = branch_lines[0].strip() if branch_lines else ""
+            if first_line.startswith("|"):
+                branch_lines = ["PIPELINE", *branch_lines]
 
             queries.append(parse("\n".join(branch_lines)))
             continue
@@ -720,6 +797,7 @@ def _parse_fork_block(lines: list[str], idx: int) -> tuple[list[Query], int]:
             i += 1
             branch_lines: list[str] = []
             in_merge_block = False
+            nested_branch_depth = 0
             while i < len(lines):
                 l2 = lines[i]
                 control2 = l2
@@ -733,9 +811,14 @@ def _parse_fork_block(lines: list[str], idx: int) -> tuple[list[Query], int]:
                 if control2.lower() == "endmerge" and in_merge_block:
                     in_merge_block = False
 
-                if control2.lower() == "endbranch":
-                    i += 1
-                    break
+                if control2.lower() == "branch":
+                    nested_branch_depth += 1
+                elif control2.lower() == "endbranch":
+                    if nested_branch_depth > 0:
+                        nested_branch_depth -= 1
+                    else:
+                        i += 1
+                        break
 
                 # Detect merge block start (the merge header stage itself is `|| merge ...`).
                 if l2.startswith("||") and l2[2:].lstrip().lower().startswith("merge "):
@@ -747,13 +830,22 @@ def _parse_fork_block(lines: list[str], idx: int) -> tuple[list[Query], int]:
                     )
 
                 if l2.startswith("||"):
-                    branch_lines.append("|" + l2[2:])
+                    if nested_branch_depth == 0:
+                        branch_lines.append("|" + l2[2:])
+                    else:
+                        branch_lines.append(l2)
                 else:
                     branch_lines.append(l2)
                 i += 1
 
             if not branch_lines:
                 raise DslParseError("Empty branch in fork")
+
+            # Allow branch pipelines that start directly with stages (e.g. `|| filter ...`)
+            # without an explicit `PIPELINE` line.
+            first_line = branch_lines[0].strip() if branch_lines else ""
+            if first_line.startswith("|"):
+                branch_lines = ["PIPELINE", *branch_lines]
 
             queries.append(parse("\n".join(branch_lines)))
             continue
@@ -895,7 +987,7 @@ def _parse_raw_json_array_multiline(
     return _parse_raw_json_array(candidate), next_idx
 
 
-def _parse_brace_map(text: str, *, context: str) -> dict[str, str]:
+def _parse_brace_map(text: str, *, context: str, coerce_values: bool = False) -> dict[str, Any]:
     s = text.strip()
     if not (s.startswith("{") and s.endswith("}")):
         raise DslParseError(f"{context} syntax: | {context} {{ a=b, c=d }}")
@@ -905,14 +997,23 @@ def _parse_brace_map(text: str, *, context: str) -> dict[str, str]:
 
     items = _split_by_comma_respecting_groups(inner)
 
-    out: dict[str, str] = {}
+    out: dict[str, Any] = {}
     for item in items:
         if not item:
             continue
-        if "=" not in item:
+        if "=" in item:
+            key, value = [x.strip() for x in item.split("=", 1)]
+        elif coerce_values and ":" in item:
+            key, value = [x.strip() for x in item.split(":", 1)]
+        else:
             raise DslParseError(f"Invalid {context} mapping: {item}")
-        key, value = [x.strip() for x in item.split("=", 1)]
-        out[key] = value
+
+        if coerce_values:
+            key_val = _parse_scalar(key)
+            key = key_val if isinstance(key_val, str) else str(key_val)
+            out[key] = _parse_scalar(value)
+        else:
+            out[key] = value
     return out
 
 
@@ -971,7 +1072,7 @@ def _split_by_comma_respecting_groups(text: str) -> list[str]:
 
 
 _GROUP_RE = re.compile(
-    r"^group\s+by\s+(?P<group>[^\s]+)\s+(?P<fields_kw>fields|fieldsMap|field)(?:\s+(?P<mode>map|list))?\s*\{(?P<fields>.*)\}\s*$",
+    r"^group\s+by\s*(?P<group>.*?)\s+(?P<fields_kw>fields|fieldsMap|field)(?:\s+(?P<mode>map|list))?\s*\{(?P<fields>.*)\}\s*$",
     re.IGNORECASE,
 )
 
@@ -1018,9 +1119,13 @@ def _parse_group(text: str) -> _GroupFields:
         if arg.lower() == "null":
             arg_val: Any = None
         elif arg.startswith("{"):
-            arg_val = _parse_brace_map(arg, context=f"group {alias}={agg}(...) argument")
+            arg_val = _parse_brace_map(
+                arg,
+                context=f"group {alias}={agg}(...) argument",
+                coerce_values=True,
+            )
         else:
-            arg_val = arg
+            arg_val = _parse_scalar(arg)
         fields.append((alias, agg, arg_val))
 
     return _GroupFields(group=group, fields=fields, emit_map=emit_map)

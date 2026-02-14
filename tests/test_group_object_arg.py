@@ -32,3 +32,44 @@ PIPELINE
             ],
         }
     }
+
+
+def test_group_allows_empty_group_keys() -> None:
+    dsl = """\
+PIPELINE
+| group by  fields { total=count(null) }
+"""
+
+    body = compile_to_pendo_aggregation(parse(dsl))
+    assert body["request"]["pipeline"][0] == {
+        "group": {
+            "group": [],
+            "fields": [{"total": {"count": None}}],
+        }
+    }
+
+
+def test_group_object_argument_coerces_typed_literals() -> None:
+    dsl = """\
+PIPELINE
+| group by visitorId fields { funnel=funnel({ maxDuration=0, items=[{'pageId': 'p1'}, {'featureId': 'f1'}], uniqueVisitorFunnel=True, onlyMatchedEvents=True }) }
+"""
+
+    body = compile_to_pendo_aggregation(parse(dsl))
+    assert body["request"]["pipeline"][0] == {
+        "group": {
+            "group": ["visitorId"],
+            "fields": [
+                {
+                    "funnel": {
+                        "funnel": {
+                            "maxDuration": 0,
+                            "items": [{"pageId": "p1"}, {"featureId": "f1"}],
+                            "uniqueVisitorFunnel": True,
+                            "onlyMatchedEvents": True,
+                        }
+                    }
+                }
+            ],
+        }
+    }

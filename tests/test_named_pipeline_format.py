@@ -35,3 +35,13 @@ TIMESERIES period=dayRange first=date(`firstDate`) last=date(`lastDate`)
 
     assert pipeline[1] == {"identified": "visitorId"}
     assert pipeline[-1] == {"limit": 10}
+
+
+def test_join_allows_empty_fields_list() -> None:
+    dsl = """\
+PIPELINE
+| join fields []
+"""
+
+    body = compile_to_pendo_aggregation(parse(dsl))
+    assert body["request"]["pipeline"] == [{"join": {"fields": []}}]
