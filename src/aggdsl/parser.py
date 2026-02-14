@@ -19,6 +19,14 @@ class DslParseError(ValueError):
 _WS_RE = re.compile(r"\s+")
 
 
+def _strip_comment(line: str) -> str:
+    """Drop whole-line // comments; inline comments are treated as content."""
+    stripped = line.lstrip()
+    if stripped.startswith("//"):
+        return ""
+    return line
+
+
 def _split_kv_pairs(text: str) -> dict[str, Any]:
     """Parse `key=value` pairs separated by whitespace.
 
@@ -163,7 +171,7 @@ class _GroupFields:
 
 
 def parse(dsl: str) -> Query:
-    lines = [ln.strip() for ln in dsl.splitlines()]
+    lines = [_strip_comment(ln).strip() for ln in dsl.splitlines()]
     lines = [ln for ln in lines if ln and not ln.startswith("#")]
     if not lines:
         raise DslParseError("Empty DSL")
