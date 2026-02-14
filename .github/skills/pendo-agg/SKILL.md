@@ -128,16 +128,16 @@ TIMESERIES period=dayRange first=now() count=30
 
 Notes:
 - PES requests use `PIPELINE` mode with a `| pes { ... }` stage (PES replaces the normal `FROM` source stage).
-- **All output files must be saved to `./results/` directory**. Create the directory if it doesn't exist.
+- **All output files must be saved to `./results/<with topic name>` directory**. Create the directory if it doesn't exist.
 
 4. Compile DSL and validate:
-   - `python tools/pendo/dsl_compile.py query.dsl > results/body.json`
-   - `python tools/pendo/validate.py results/body.json`
+   - `python tools/pendo/dsl_compile.py query.dsl > results/<topic name>/body.json`
+   - `python tools/pendo/validate.py results/<topic name>/body.json`
 5. Run the aggregation:
-   - `python tools/pendo/run_agg.py query.dsl > results/result.json`
+   - `python tools/pendo/run_agg.py query.dsl > results/<topic name>/result.json`
 6. If the request fails, iterate up to 5 times:
    - adjust DSL, recompile, re-run
    - use the exact error message from the previous attempt to guide the fix
 7. Summarize and chart:
-   - `python tools/pendo/chart.py results/result.json --summary`
-   - optionally produce a Vega spec: `python tools/pendo/chart.py results/result.json --vega --x field --y metric > results/chart.vega.json`
+   - `python tools/pendo/chart.py results/<topic name>/result.json --summary`
+   - optionally produce a Vega spec: `python tools/pendo/chart.py results/<topic name>/result.json --vega --x field --y metric > results/<topic name>/chart.vega.json`
