@@ -128,7 +128,7 @@ TIMESERIES period=dayRange first=now() count=30
 
 Notes:
 - PES requests use `PIPELINE` mode with a `| pes { ... }` stage (PES replaces the normal `FROM` source stage).
-- **All output files must be saved to `./results/<with topic name>` directory**. Create the directory if it doesn't exist.
+- **All output files must be saved to `./results/<topic name>/` directory**. Create the directory if it doesn't exist.
 
 4. Compile DSL and validate:
    - `python tools/pendo/dsl_compile.py query.dsl > results/<topic name>/body.json`
