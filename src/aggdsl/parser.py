@@ -116,8 +116,6 @@ def _parse_scalar(token: str) -> Any:
             for part in _split_by_comma_respecting_groups(inner)
             if part.strip()
         ]
-    if tok == "[]":
-        return []
     if tok.isdigit() or (tok.startswith("-") and tok[1:].isdigit()):
         return int(tok)
     return tok
