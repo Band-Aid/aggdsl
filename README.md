@@ -86,7 +86,7 @@ Merge blocks:
 - For backwards compatibility, the older `>>` prefix is still accepted (treated as `|`).
 - `mappings { ... }` is optional; some Pendo exports omit it.
 
-For a full, real-world example, see [examples/nps_responses.dsl](examples/nps_responses.dsl).
+For complete query patterns, browse the [example library](examples/INDEX.md).
 
 For session replay queries and comprehensive enrichment patterns, see [SESSION_REPLAY_EXAMPLES.md](SESSION_REPLAY_EXAMPLES.md).
 
@@ -112,11 +112,18 @@ By default, the CLI emits the common request-object form:
 
 Aggregation requests are emitted in this request-object form (with optional `name`) since Pendo aggregations are sent as `request.pipeline`.
 
+## Examples
+
+The [`examples/`](examples/) directory contains portable queries for event and
+feature analysis, funnels, PES, session replays, merges, forks, and product
+areas. Its [index](examples/INDEX.md) explains the categories and how to compile
+or execute a query. All identifiers in the examples are synthetic placeholders.
+
 ## Pendo helper tools
 
-The repository includes standalone helpers under `tools/pendo/`. They read API
-keys from `PENDO_API_KEY` or `PENDO_INTEGRATION_KEY`; keys are never passed on
-the command line.
+The repository includes standalone helpers under `tools/pendo/`. Networked
+helpers read API keys from `PENDO_API_KEY` or `PENDO_INTEGRATION_KEY`; keys are
+never passed on the command line.
 
 To enrich aggregation output with feature and page names across every app:
 

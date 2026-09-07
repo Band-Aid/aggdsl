@@ -1,0 +1,62 @@
+{
+  "categories": {
+    "events": {
+      "keywords": ["event", "events", "traffic", "volume", "activity", "clicks", "interactions"],
+      "examples": [
+        "events__daily_counts__last30d__app1234567890123456__top5.dsl",
+        "events__total_events_by_appid__last30d__top10.dsl",
+        "events__daily_events_error_deadclicks__last30d__app1234567890123456__top5.dsl"
+      ]
+    },
+    "visitors": {
+      "keywords": ["visitor", "visitors", "user", "users", "unique visitor", "unique user", "MAU", "WAU", "DAU", "active users", "monthly active", "weekly active", "daily active", "user count", "visitor count", "audience", "audience size"],
+      "examples": [
+        "total_count_of_visitors_past_7_days.dsl"
+      ]
+    },
+    "features": {
+      "keywords": ["feature", "features", "feature usage", "most used", "popular features"],
+      "examples": [
+        "feature_events__top10_by_events__last30d__app_neg123456.dsl",
+        "feature_events__recent_select_fields__last1d.dsl",
+        "feature_retention_top5.dsl"
+      ]
+    },
+    "funnels": {
+      "keywords": ["funnel", "conversion", "drop-off", "drop off", "completion rate", "flow"],
+      "examples": [
+        "funnel_page_to_feature_conversion.dsl"
+      ]
+    },
+    "engagement": {
+      "keywords": ["engagement", "PES", "product engagement score", "engagement score", "active users"],
+      "examples": [
+        "pes__basic__last30d__app1234567890123456.dsl",
+        "pes__segment_core_events__last30d__app_neg123456.dsl",
+        "pes_score_30d.dsl"
+      ]
+    },
+    "session_replays": {
+      "keywords": ["session replay", "replays", "recording", "frustration", "rage click", "dead click", "error session", "broken session"],
+      "examples": [
+        "session_replays__basic__last30d__app_neg323232.dsl",
+        "session_replays__frustration_full__last30d__app_neg123456__limit50__min300s.dsl",
+        "session_replays__top_broken_sessions__last30d__app_neg323232__top5.dsl",
+        "session_replays__top_error_sessions_events__last30d__app_neg323232__top5.dsl",
+        "session_replays__top_frustration_sessions_metadata__last30d__app1234567890123456__top5.dsl"
+      ]
+    },
+    "retention": {
+      "keywords": ["retention", "repeat", "return", "churn", "sticky"],
+      "examples": [
+        "feature_retention_top5.dsl"
+      ]
+    },
+    "product_areas": {
+      "keywords": ["product area", "navigation", "pages", "user journey", "pathways"],
+      "examples": [
+        "product_areas__usage_pages_features__last7d.dsl"
+      ]
+    }
+  }
+}
