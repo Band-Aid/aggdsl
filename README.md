@@ -112,6 +112,23 @@ By default, the CLI emits the common request-object form:
 
 Aggregation requests are emitted in this request-object form (with optional `name`) since Pendo aggregations are sent as `request.pipeline`.
 
+## Pendo helper tools
+
+The repository includes standalone helpers under `tools/pendo/`. They read API
+keys from `PENDO_API_KEY` or `PENDO_INTEGRATION_KEY`; keys are never passed on
+the command line.
+
+To enrich aggregation output with feature and page names across every app:
+
+```bash
+python -m tools.pendo.run_agg query.dsl \
+  | python -m tools.pendo.lookup_names - > enriched-result.json
+```
+
+Pass `--app-id <id>` to restrict name matches to one application. Unknown or
+deleted entity IDs remain unchanged, and a failed feature lookup does not
+prevent page names from being added.
+
 ## JSON  DSL (decompile)
 
 You can translate an aggregation JSON body into DSL:

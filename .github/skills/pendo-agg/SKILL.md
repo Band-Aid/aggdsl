@@ -120,6 +120,26 @@ TIMESERIES period=dayRange first=now() count=30
 | group by visitorId fields { totalEvents=sum(numEvents) }
 ```
 
+### 6) Enrich feature and page IDs with names
+
+- Script: `tools/pendo/lookup_names.py`
+- Input: Aggregation result JSON from a file or stdin
+- Output: The same JSON with `featureName` and `pageName` fields added next to recognized IDs
+
+The helper loads expanded feature and page catalogs from the Pendo REST API.
+It searches every application by default; pass `--app-id <id>` to restrict
+matches to one application.
+
+Examples:
+
+- `python -m tools.pendo.lookup_names result.json`
+- `python -m tools.pendo.run_agg query.dsl | python -m tools.pendo.lookup_names -`
+- `python -m tools.pendo.lookup_names result.json --app-id -323232`
+
+The script reads `PENDO_API_KEY` or `PENDO_INTEGRATION_KEY`. Unknown or deleted
+IDs remain unchanged. Feature and page catalogs are fetched independently, so
+one failed lookup does not prevent the other type from being enriched.
+
 ## Agent workflow (how to use this skill)
 
 1. Ask clarifying questions only if required fields are unknown (e.g., appId, product area definition).
