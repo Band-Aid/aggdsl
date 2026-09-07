@@ -3,7 +3,6 @@ venv/
 ENV/
 env/
 .venv/
-examples/
 .env*
 .venv
 __pycache__/

@@ -18,6 +18,13 @@ Notes:
 - The tools in `tools/pendo/` use only environment variables for secrets.
 - If you prefer, create a local `.env` (see `.env.example`). `run_agg.py` will load it if the env vars aren't set.
 - READ the manual to understand how to generate DSL - `Pendo Aggregation Spec Sheet (Project Truth).md`
+
+## Example library
+
+Use `examples/INDEX.md` or the intent map in `examples/index.json` to select a
+portable query pattern. Treat every identifier in the examples as a synthetic
+placeholder and replace it with values for the current Pendo subscription.
+
 ## Tools
 
 ### 1) Compile DSL → Aggregation JSON
