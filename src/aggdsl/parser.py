@@ -147,7 +147,7 @@ def _parse_inline_object(token: str) -> dict[str, Any]:
 
 
 def _parse_bracket_args(text: str) -> dict[str, Any]:
-    """Parse `[a=1,b="x"]` style lists with quotes."""
+    """Parse `[a=1,b="x"]` arguments, including nested values."""
     s = text.strip()
     if not (s.startswith("[") and s.endswith("]")):
         raise DslParseError(f"Expected [..] argument list, got: {text}")
@@ -155,33 +155,8 @@ def _parse_bracket_args(text: str) -> dict[str, Any]:
     if not inner:
         return {}
 
-    items: list[str] = []
-    buf: list[str] = []
-    in_quotes = False
-    escape = False
-    for ch in inner:
-        if escape:
-            buf.append(ch)
-            escape = False
-            continue
-        if ch == "\\":
-            escape = True
-            buf.append(ch)
-            continue
-        if ch == '"':
-            in_quotes = not in_quotes
-            buf.append(ch)
-            continue
-        if ch == "," and not in_quotes:
-            items.append("".join(buf).strip())
-            buf = []
-            continue
-        buf.append(ch)
-    if buf:
-        items.append("".join(buf).strip())
-
     out: dict[str, Any] = {}
-    for item in items:
+    for item in _split_by_comma_respecting_groups(inner):
         if not item:
             continue
         if "=" not in item:
