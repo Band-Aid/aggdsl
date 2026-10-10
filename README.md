@@ -49,6 +49,14 @@ TIMESERIES period=dayRange first=1731769200000 count=180
 Note: `count` is signed. With `first=now()`, `count=-30` means 30 days before now and `count=30` means 30 days after now.
 ```
 
+## Claude skill
+
+`skills/aggdsl/` is a Claude skill for writing aggDSL. It is kept small to save tokens: `SKILL.md`
+sends the model to one pattern from `patterns/`, and `scripts/check.py` compiles and lints the query
+with short messages that say how to fix each problem. `tests/test_skill.py` checks that every pattern
+compiles. Run `python skills/build_skill.py` to build `dist/aggdsl.zip` for upload. The build bundles
+the current `src/aggdsl` compiler.
+
 ## Advanced: spawn and switch
 
 Some real Pendo aggregation pipelines use branching (via `spawn`) and value mapping (via `switch`). `aggdsl` supports both as first-class DSL stages.

@@ -17,7 +17,8 @@ Notes:
 - Never print or paste `PENDO_API_KEY` in chat.
 - The tools in `tools/pendo/` use only environment variables for secrets.
 - If you prefer, create a local `.env` (see `.env.example`). `run_agg.py` will load it if the env vars aren't set.
-- READ the manual to understand how to generate DSL - `Pendo Aggregation Spec Sheet (Project Truth).md`
+- To write the DSL, follow `skills/aggdsl/SKILL.md` (pattern → adapt → `python skills/aggdsl/scripts/check.py q.dsl`). Don't read the `(Project Truth)` spec files whole; `grep -n` them for a specific term.
+
 ## Tools
 
 ### 1) Compile DSL → Aggregation JSON
@@ -144,7 +145,7 @@ one failed lookup does not prevent the other type from being enriched.
 
 1. Ask clarifying questions only if required fields are unknown (e.g., appId, product area definition).
 2. **If segment filtering is needed**: Use `tools/pendo/lookup_segments.py` to find the segment ID by name.
-3. Generate a DSL query that matches the spec sheet.
+3. Generate the DSL per `skills/aggdsl/SKILL.md` and run its `check.py` until it prints `OK`.
 
 Notes:
 - PES requests use `PIPELINE` mode with a `| pes { ... }` stage (PES replaces the normal `FROM` source stage).
