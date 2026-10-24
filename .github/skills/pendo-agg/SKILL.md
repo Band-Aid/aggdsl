@@ -38,6 +38,11 @@ Turn the question into a checked request, fetch once, and answer from the return
    `run_agg` validates JSON before sending; use the standalone validator for
    validation-only work. Continue only when each command succeeds.
 
+For additional portable query patterns, see [examples/INDEX.md](../../../examples/INDEX.md)
+or the intent map in [examples/index.json](../../../examples/index.json). Treat every
+identifier in the examples as a synthetic placeholder and replace it with values for
+the current Pendo subscription.
+
 ```bash
 python skills/aggdsl/scripts/check.py results/<topic>/query.dsl
 python -m tools.pendo.dsl_compile results/<topic>/query.dsl > results/<topic>/body.json
