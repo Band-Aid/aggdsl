@@ -1,170 +1,69 @@
-# Pendo Aggregation (DSL → Fetch → Summarize)
+---
+name: pendo-agg
+description: >-
+  Run Pendo aggregation queries from natural-language questions, aggDSL, or request
+  JSON, then summarize or chart the returned data. Use for fetching Pendo analytics;
+  for DSL-only authoring or review, use the repository's aggdsl skill.
+---
 
-This skill turns a natural-language question into a Pendo Aggregation request body, fetches the data from Pendo, then summarizes and/or charts the results.
+# Pendo aggregation
 
-## Requirements
+Turn the question into a checked request, fetch once, and answer from the returned data.
 
-Environment variables:
+## Setup and scope
 
-- `PENDO_API_KEY` (required): your Pendo integration/API key.
-   - Alias supported: `PENDO_INTEGRATION_KEY`.
-- `PENDO_AGG_URL` (optional): the full HTTPS URL to the aggregation endpoint you want to call.
-   - Default: `https://app.pendo.io/api/v1/aggregation`.
-- `PENDO_API_KEY_HEADER` (optional): header name for the key. Defaults to `x-pendo-integration-key`.
+- Run commands from the repository root (three directories above this skill), where
+  `tools/pendo/` and `skills/aggdsl/` live. Use Python 3.10+ with `aggdsl` importable;
+  prefer the existing `.venv/bin/python`. Commands below use `python` for that interpreter.
+  If needed, use `PYTHONPATH=src` for module commands rather than reinstalling dependencies.
+- Credentials: `PENDO_API_KEY` or `PENDO_INTEGRATION_KEY`. Never print keys, read `.env`
+  into chat, or put secrets in commands. `run_agg` loads the root `.env` only when neither
+  key is set; lookup helpers require the key in their environment.
+- Save generated artifacts under `results/<topic>/` unless the user specifies another
+  destination. Use a new topic directory when existing files would be overwritten.
+- Reuse supplied IDs, queries, and results. Ask only for missing information that changes
+  the query, such as an ambiguous app, metric definition, or time window; never invent IDs.
+  For existing results, skip directly to analysis. For query-only requests, stop before fetching.
 
-Notes:
+## Build and fetch
 
-- Never print or paste `PENDO_API_KEY` in chat.
-- The tools in `tools/pendo/` use only environment variables for secrets.
-- If you prefer, create a local `.env` (see `.env.example`). `run_agg.py` will load it if the env vars aren't set.
-- READ the manual to understand how to generate DSL - `Pendo Aggregation Spec Sheet (Project Truth).md`
+1. For new or edited DSL, follow [the aggdsl skill](../../../skills/aggdsl/SKILL.md):
+   read the closest pattern, adapt it, and run the checker until it prints `OK`.
+   Resolve named segments only when their IDs are missing; see
+   [optional tools](references/optional-tools.md). For historical windows ending at
+   `now()`, use a negative count. PES uses `PIPELINE` with a `| pes {...}` stage.
+2. Compile the checked DSL to a saved body. Default compilation resolves `now()` to
+   epoch milliseconds. If the user supplied JSON, use that body directly.
+3. Send the saved body, so the request matches the artifact and is not recompiled.
+   `run_agg` validates JSON before sending; use the standalone validator for
+   validation-only work. Continue only when each command succeeds.
 
-## Example library
+For additional portable query patterns, see [examples/INDEX.md](../../../examples/INDEX.md)
+or the intent map in [examples/index.json](../../../examples/index.json). Treat every
+identifier in the examples as a synthetic placeholder and replace it with values for
+the current Pendo subscription.
 
-Use `examples/INDEX.md` or the intent map in `examples/index.json` to select a
-portable query pattern. Treat every identifier in the examples as a synthetic
-placeholder and replace it with values for the current Pendo subscription.
-
-## Tools
-
-### 1) Compile DSL → Aggregation JSON
-
-- Script: `tools/pendo/dsl_compile.py`
-- Input: `.dsl` file or stdin
-- Output: aggregation JSON body to stdout
-
-Examples:
-
-- `python tools/pendo/dsl_compile.py query.dsl > body.json`
-- `cat query.dsl | python tools/pendo/dsl_compile.py --stdin > body.json`
-
-Recommended (module execution):
-
-- `python -m tools.pendo.dsl_compile query.dsl > body.json`
-
-By default it resolves `now()` to the current epoch-ms (Pendo endpoints often require numeric timestamps).
-
-### 2) Validate aggregation JSON
-
-- Script: `tools/pendo/validate.py`
-- Input: JSON file or stdin
-- Output: exits non-zero on schema issues; prints a short reason.
-
-Recommended:
-
-- `python -m tools.pendo.validate body.json`
-
-### 3) Run aggregation (fetch data)
-
-- Script: `tools/pendo/run_agg.py`
-- Input: JSON request body file or DSL file (auto-detected)
-- Output: response JSON to stdout
-
-Examples:
-
-- `python tools/pendo/run_agg.py body.json > result.json`
-- `python tools/pendo/run_agg.py query.dsl > result.json`
-
-Recommended:
-
-- `python -m tools.pendo.run_agg body.json > result.json`
-
-Retry behavior:
-
-- `run_agg.py` will attempt up to 5 build+send attempts on failure.
-- Between attempts it may apply safe rewrites (e.g., resolving `now()` if it slipped through).
-- If failures persist, it prints the last error response body (when available) so you can adjust the DSL.
-
-### 4) Summarize + chart
-
-- Script: `tools/pendo/chart.py`
-- Input: result JSON file or stdin
-- Output: Markdown summary and an optional Vega-Lite spec (JSON) for quick visualization.
-
-Examples:
-
-- `python tools/pendo/chart.py result.json --summary`
-- `python tools/pendo/chart.py result.json --vega --x groupId --y totalEvents > chart.vega.json`
-
-Recommended:
-
-- `python -m tools.pendo.chart result.json --summary`
-
-### 5) Lookup segments
-
-- Script: `tools/pendo/lookup_segments.py`
-- Input: Optional search term and appId
-- Output: List of segment IDs and names
-
-The Pendo Aggregation API does not provide a `segments` source, so use the REST API instead.
-
-Examples:
-
-- `python tools/pendo/lookup_segments.py` - List all segments
-- `python tools/pendo/lookup_segments.py 'JAPAN'` - Search for segments containing "JAPAN"
-- `python tools/pendo/lookup_segments.py 'paying' -323232` - Search with specific appId
-
-Recommended:
-
-- `python -m tools.pendo.lookup_segments "search term"`
-
-The script requires `PENDO_API_KEY` environment variable and uses the REST API endpoint:
-`https://app.pendo.io/api/v1/segment`
-
-Once you have the segment ID, use it in your DSL queries:
-
-```dsl
-PIPELINE
-| pes {"appId":-323232,"segment":{"id":"SEGMENT_ID_HERE"},"dayCount":-30}
+```bash
+python skills/aggdsl/scripts/check.py results/<topic>/query.dsl
+python -m tools.pendo.dsl_compile results/<topic>/query.dsl > results/<topic>/body.json
+python -m tools.pendo.run_agg results/<topic>/body.json --max-attempts 1 > results/<topic>/result.json
 ```
 
-Or with FROM queries:
+The runner defaults to five attempts, so explicitly use `--max-attempts 1` when
+handling errors yourself. Allow at most five HTTP attempts total per query task:
+fix request errors from the exact response, then recheck and recompile changed DSL;
+back off for transient or rate-limit errors. Stop on authentication/permission errors,
+an unchanged permanent failure, or exhausted attempts. Report the last error and the
+needed correction. A failed command can leave an empty result file; do not analyze it.
 
-```dsl
-FROM event([source=events,appId=-323232])
-TIMESERIES period=dayRange first=now() count=30
-| segment id="SEGMENT_ID_HERE"
-| group by visitorId fields { totalEvents=sum(numEvents) }
-```
+## Answer from results
 
-### 6) Enrich feature and page IDs with names
+Inspect the response shape, row count, and requested metrics. Report the app, time
+window, filters, units, and findings supported by the data; link saved artifacts.
+Distinguish empty rows from an unrecognized response shape. Compilation establishes
+syntax only; neither a clean check nor an empty response proves the intended scope.
 
-- Script: `tools/pendo/lookup_names.py`
-- Input: Aggregation result JSON from a file or stdin
-- Output: The same JSON with `featureName` and `pageName` fields added next to recognized IDs
-
-The helper loads expanded feature and page catalogs from the Pendo REST API.
-It searches every application by default; pass `--app-id <id>` to restrict
-matches to one application.
-
-Examples:
-
-- `python -m tools.pendo.lookup_names result.json`
-- `python -m tools.pendo.run_agg query.dsl | python -m tools.pendo.lookup_names -`
-- `python -m tools.pendo.lookup_names result.json --app-id -323232`
-
-The script reads `PENDO_API_KEY` or `PENDO_INTEGRATION_KEY`. Unknown or deleted
-IDs remain unchanged. Feature and page catalogs are fetched independently, so
-one failed lookup does not prevent the other type from being enriched.
-
-## Agent workflow (how to use this skill)
-
-1. Ask clarifying questions only if required fields are unknown (e.g., appId, product area definition).
-2. **If segment filtering is needed**: Use `tools/pendo/lookup_segments.py` to find the segment ID by name.
-3. Generate a DSL query that matches the spec sheet.
-
-Notes:
-- PES requests use `PIPELINE` mode with a `| pes { ... }` stage (PES replaces the normal `FROM` source stage).
-- **All output files must be saved to `./results/<topic name>/` directory**. Create the directory if it doesn't exist.
-
-4. Compile DSL and validate:
-   - `python tools/pendo/dsl_compile.py query.dsl > results/<topic name>/body.json`
-   - `python tools/pendo/validate.py results/<topic name>/body.json`
-5. Run the aggregation:
-   - `python tools/pendo/run_agg.py query.dsl > results/<topic name>/result.json`
-6. If the request fails, iterate up to 5 times:
-   - adjust DSL, recompile, re-run
-   - use the exact error message from the previous attempt to guide the fix
-7. Summarize and chart:
-   - `python tools/pendo/chart.py results/<topic name>/result.json --summary`
-   - optionally produce a Vega spec: `python tools/pendo/chart.py results/<topic name>/result.json --vega --x field --y metric > results/<topic name>/chart.vega.json`
+Read [optional tools](references/optional-tools.md) only for segment lookup, name
+enrichment, standalone validation, or charts. Reuse a successful response for these
+steps rather than fetching again. The summary helper describes rows and columns;
+calculate the requested metrics yourself. Use explicit metric fields for charts.
