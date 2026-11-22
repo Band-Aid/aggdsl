@@ -112,7 +112,7 @@ Measured on the mock, which understates the real gap because its tables are smal
 | `guide_audit.js` | 2 → 1 | 4,370 → 2,448 |
 | `account_brief.js` | 10 → 1 | 4,387 → 875 |
 
-Each program is itself 1.3 to 2.2 KB that the model has to write. Tool definitions for
+Each program is itself 1.3 to 2.0 KB that the model has to write. Tool definitions for
 the ten mock tools are 18.8 KB raw against 2.7 KB for `search` plus `execute`.
 
 ## Connect to the real Pendo MCP server
