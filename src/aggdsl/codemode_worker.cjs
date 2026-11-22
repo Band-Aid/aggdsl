@@ -15,19 +15,44 @@ function send(message) {
   process.stdout.write(JSON.stringify(message) + '\n');
 }
 
+function request(method, payload) {
+  const id = nextId++;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    send({ type: 'call', method, id, ...payload });
+  });
+}
+
 const api = Object.freeze({
   aggdsl: Object.freeze({
     run(dsl) {
       if (typeof dsl !== 'string' || !dsl.trim()) {
-        return Promise.reject(new TypeError('aggdsl.run requires a DSL string'));
+        return Promise.reject(new TypeError('aggdsl.run requires a non-empty DSL string'));
       }
-      const id = nextId++;
-      return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject });
-        send({ type: 'call', method: 'aggdsl.run', id, dsl });
-      });
+      return request('aggdsl.run', { dsl });
+    },
+    validate(dsl, options = {}) {
+      if (typeof dsl !== 'string' || !dsl.trim()) {
+        return Promise.reject(new TypeError('aggdsl.validate requires a DSL string'));
+      }
+      return request('aggdsl.validate', { dsl, includeBody: options?.includeBody === true });
     }
-  })
+  }),
+  catalog: Object.freeze({
+    search(options) {
+      if (!options || typeof options !== 'object') {
+        return Promise.reject(new TypeError('catalog.search requires {type, query?, appId?, limit?}'));
+      }
+      // JSON crossing the bridge is data, not JavaScript functionality.
+      return request('catalog.search', { options });
+    },
+    apps() {
+      return request('catalog.apps', {});
+    }
+  }),
+  help(topic = 'workflow') {
+    return request('help', { topic });
+  }
 });
 
 async function execute(code) {
