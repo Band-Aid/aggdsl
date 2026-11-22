@@ -28,7 +28,7 @@ jobs:
       - name: Install package
         run: pip install -e '.[dev,codemode]'
       - name: Test entire aggDSL project
-        run: pytest -q
+        run: python -m pytest -q
       - name: Build wheel and check on-demand documentation assets
         run: |
           pip wheel --no-deps -w /tmp/aggdsl-wheels .
