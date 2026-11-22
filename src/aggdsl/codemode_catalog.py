@@ -55,7 +55,7 @@ _GUIDE_NAMES = {
         "events (often requires appId), singleEvents, recordingMetadata. "
         "Use catalog.search to resolve entity IDs. App IDs can be observed through "
         "catalog.apps(); it is NOT a comprehensive application inventory. "
-        "Metadata/event-property field availability cannot be inferred reliably "
+        "Use pendo.catalog.metadata({kind:'visitor'|'account',query:'plan'}) to discover declared metadata fields. Event-property field availability cannot be inferred reliably "
         "from this catalog, so do not invent field names."
     ),
     "examples": (
