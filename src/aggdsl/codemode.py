@@ -245,6 +245,8 @@ def execute_code(
                         type(call_id) is not int or call_id < 1 or call_id in in_flight):
                     raise CodeModeError("Unsupported JavaScript bridge request")
                 if total_calls >= limits.max_calls:
+                    if method == "aggdsl.run":
+                        raise CodeModeError(f"Maximum aggregation calls exceeded ({limits.max_calls} total calls)")
                     raise CodeModeError(f"Maximum Code Mode calls exceeded ({limits.max_calls})")
                 if method == "aggdsl.run" and aggregation_calls >= limits.max_agg_calls:
                     raise CodeModeError(f"Maximum aggregation calls exceeded ({limits.max_agg_calls})")
