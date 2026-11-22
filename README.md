@@ -168,11 +168,21 @@ Notes:
 
 ## Code Mode PoC
 
-Run dynamically generated, read-only Pendo analyses in **one** JavaScript tool call.
-Code Mode can discover real Page/Feature/Track Event/Guide IDs and declared metadata fields, load the full
-aggDSL grammar or patterns on demand, validate syntax, and run independent
-aggregations concurrently using the existing aggDSL compiler. This exposes an optional read-only MCP tool called
-`execute_pendo_code` (Node.js >=22.13 required).
+Reduce Pendo's many specialized MCP tools to a compact **two-tool read-only**
+analytical interface, backed by the existing aggDSL compiler:
+
+- `read_aggdsl_reference(topic)`: AI retrieves grammar, sources or one query
+  pattern **before** writing an unfamiliar DSL query.
+- `execute_pendo_code(code)`: AI writes JavaScript to discover Pendo entities,
+  generate new DSL, compile-check it, run several aggregations and return only
+  the requested result.
+
+The same grammar and syntax patterns are also published as MCP Resources for
+clients that support them. The Reference tool is the cross-client fallback.
+Neither interface defines business KPI/metric semantics; those belong to the
+user and the agent, not the execution layer.
+
+Run with Node.js >=22.13 and Python >=3.10:
 
 ```bash
 pip install -e '.[codemode]'
@@ -186,5 +196,6 @@ To test a fixed-ID program locally without Pendo credentials:
 aggdsl-code --dry-run examples/code_mode_compare.js
 ```
 
-See [Code Mode setup, example and safety notes](docs/CODE_MODE.md). This is a
-trusted-local proof of concept, not a production multi-tenant JS sandbox.
+See [Code Mode documentation](docs/CODE_MODE.md). Trusted-local PoC only,
+not a production multi-tenant JavaScript sandbox. Live Pendo integration
+is not verified by the offline tests.
