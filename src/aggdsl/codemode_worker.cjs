@@ -48,6 +48,12 @@ const api = Object.freeze({
     },
     apps() {
       return request('catalog.apps', {});
+    },
+    metadata(options = {}) {
+      if (!options || typeof options !== 'object') {
+        return Promise.reject(new TypeError('catalog.metadata requires an options object'));
+      }
+      return request('catalog.metadata', { options });
     }
   }),
   help(topic = 'workflow') {
