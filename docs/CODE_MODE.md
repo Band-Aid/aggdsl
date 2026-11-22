@@ -12,7 +12,7 @@ the programming model, not a fixed query registry.
 
 | Method | Result | Network |
 | --- | --- | --- |
-| `pendo.help(topic)` | Focused DSL reference ("workflow", "syntax", "sources", "examples", "troubleshooting") | None |
+| `pendo.help(topic)` | On-demand documentation ("workflow", "syntax", "sources", "examples", "troubleshooting", "grammar", "patterns", "pattern:<name>") | None |
 | `pendo.catalog.search({type,query?,appId?,limit?})` | ID, name and app ID for matching Pendo definitions | GET only |
 | `pendo.catalog.apps()` | App IDs **observed on tagged entities**, never a complete app list | GET only |
 | `pendo.aggdsl.validate(dsl, {includeBody?:true})` | Syntax/structure checks, warnings and optionally compiled JSON | None |
@@ -120,7 +120,8 @@ Default budgets per JavaScript invocation:
 - 20 KB JavaScript and 20 KB DSL per call
 - 256 KB total backend responses, 64 KB final result
 
-Use `pendo.help('syntax')` and `pendo.aggdsl.validate(dsl)` to inspect compile
+Use `pendo.help('grammar')` or `pendo.help('pattern:top-features')` to
+learn additional stages and patterns, and `pendo.aggdsl.validate(dsl)` to inspect compile
 errors. If the Pendo API rejects a query (e.g. nonexistent property), the
 error is returned to JavaScript so the agent can revise and try again.
 Validation is *compile-only*, and a passing result does not prove that the
