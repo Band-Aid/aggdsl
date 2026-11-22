@@ -418,7 +418,9 @@ def test_benchmark_replays_the_same_read_calls_directly():
     assert regular["tool_calls"] == 6 and code["tool_calls"] == 2
     # One ranking call, then five breakdowns issued together.
     assert regular["model_turns_sequential"] == 7 and regular["model_turns_parallel"] == 3
-    assert len(backend.calls) == 12 and backend.calls[:6] == backend.calls[6:]  # identical calls on both sides
+    # Identical calls on both sides; the parallel ones may reach the backend in any order.
+    key = lambda call: json.dumps(call, sort_keys=True)
+    assert len(backend.calls) == 12 and sorted(backend.calls[:6], key=key) == sorted(backend.calls[6:], key=key)
     assert regular["upstream_ms_sequential"] >= 600 > regular["upstream_ms_parallel"] >= 200
     assert code["upstream_ms"] < regular["upstream_ms_sequential"]
     assert code["definition_bytes"] < regular["definition_bytes"]
