@@ -141,6 +141,30 @@ def test_rejects_non_pendo_catalog_host(monkeypatch):
         PendoCatalog(transport=lambda *_: []).search(kind="pages", query="test")
 
 
+
+def test_metadata_schema_discovery_filters_field_definitions_only():
+    requested = []
+    def transport(url, timeout, cap):
+        requested.append(url)
+        return {"custom": {
+            "plan": {"type": "string", "displayName": "Plan"},
+            "arr": {"type": "list"},
+            "secret_value": {"value": "do-not-return"},
+        }}
+    found = PendoCatalog(transport=transport).metadata(kind="account", query="plan")
+    assert found["parsed"]
+    assert found["fields"] == [{
+        "name": "plan", "group": "custom", "type": "string",
+        "displayName": "Plan",
+    }]
+    assert requested == ["https://app.pendo.io/api/v1/metadata/schema/account"]
+    assert "do-not-return" not in json.dumps(found)
+
+
+def test_metadata_schema_does_not_permit_arbitrary_endpoint_paths():
+    with pytest.raises(DiscoveryError, match="Metadata kind"):
+        PendoCatalog(transport=lambda *_: {}).metadata(kind="../../visitor")
+
 class FakeBackend:
     def __init__(self):
         self.dsl = []
@@ -161,6 +185,9 @@ class FakeCatalog:
     def apps(self, *, timeout_seconds):
         return {"apps": [{"appId": "123456", "name": None}],
                 "completeness": "observed-on-tagged-entities-only"}
+
+    def metadata(self, *, kind, query, limit, timeout_seconds):
+        return {"kind": kind, "fields": [{"name": "plan", "type": "string", "group": "custom"}]}
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="Node.js required")
@@ -198,6 +225,16 @@ return {apps:a.apps.length, hasDocs:h.text.includes('catalog.search')};
 """, backend=FakeBackend(), catalog=FakeCatalog())
     assert result["result"] == {"apps": 1, "hasDocs": True}
     assert result["calls"] == 2
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="Node.js required")
+def test_code_mode_can_query_metadata_schema():
+    result = execute_code("""
+const schema = await pendo.catalog.metadata({kind:'account',query:'plan'});
+return schema.fields[0].name;
+""", backend=FakeBackend(), catalog=FakeCatalog())
+    assert result["result"] == "plan"
+    assert result["discovery_calls"] == 1
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="Node.js required")
