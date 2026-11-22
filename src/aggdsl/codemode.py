@@ -19,10 +19,11 @@ import threading
 import time
 from typing import Any, Protocol
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from aggdsl import compile_to_pendo_aggregation, parse
-from .codemode_catalog import PendoCatalog, help_topic, validate_dsl
+from .codemode_catalog import NoRedirect, PendoCatalog, _base_url, help_topic, validate_dsl
 
 
 class CodeModeError(RuntimeError):
@@ -70,9 +71,14 @@ class PendoBackend:
         if not key:
             raise CodeModeError("Set PENDO_INTEGRATION_KEY (or PENDO_API_KEY) on the Python host")
 
-        url = os.environ.get("PENDO_AGG_URL", "https://app.pendo.io/api/v1/aggregation")
-        if not url.startswith("https://"):
-            raise CodeModeError("PENDO_AGG_URL must use HTTPS")
+        url = os.environ.get("PENDO_AGG_URL", _base_url() + "/api/v1/aggregation")
+        parsed = urllib.parse.urlsplit(url)
+        if (parsed.scheme != "https" or not parsed.hostname or
+                not parsed.hostname.endswith(".pendo.io") or
+                parsed.username is not None or parsed.password is not None or
+                parsed.port is not None or parsed.query or parsed.fragment or
+                parsed.path != "/api/v1/aggregation"):
+            raise CodeModeError("PENDO_AGG_URL must be the HTTPS /api/v1/aggregation endpoint on a Pendo hostname")
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
             url,
@@ -85,7 +91,7 @@ class PendoBackend:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=max(0.1, min(timeout_seconds, 15.0))) as response:
+            with urllib.request.build_opener(NoRedirect()).open(request, timeout=max(0.1, min(timeout_seconds, 15.0))) as response:
                 raw = response.read(self.max_response_bytes + 1)
                 if len(raw) > self.max_response_bytes:
                     raise CodeModeError("Pendo response too large; add aggregation/limit to your DSL")
