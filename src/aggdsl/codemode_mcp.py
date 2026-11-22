@@ -16,11 +16,16 @@ from .codemode_catalog import DiscoveryError, help_topic
 def create_server():
     """Construct a 2-tool MCP server for testing and stdio deployment."""
     try:
-        from mcp.server.fastmcp import FastMCP
-    except ImportError as exc:
-        raise SystemExit("Install the MCP extra: pip install -e '.[codemode]'") from exc
+        # MCP Python SDK >=2 renamed FastMCP to MCPServer.
+        from mcp.server.mcpserver import MCPServer as ServerClass
+    except ImportError:
+        try:
+            # Compatibility with Python 3.10 installations using MCP SDK 1.x.
+            from mcp.server.fastmcp import FastMCP as ServerClass
+        except ImportError as exc:
+            raise SystemExit("Install the MCP extra: pip install -e '.[codemode]'") from exc
 
-    server = FastMCP("aggdsl Code Mode")
+    server = ServerClass("aggdsl Code Mode")
 
     @server.tool()
     def read_aggdsl_reference(topic: str = "workflow") -> dict:
