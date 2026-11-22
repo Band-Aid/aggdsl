@@ -270,7 +270,7 @@ def execute_code(
                     raise CodeModeError(f"Maximum catalog calls exceeded ({limits.max_discovery_calls})")
                 total_calls += 1
                 aggregation_calls += int(method == "aggdsl.run")
-                discovery_calls += int(method in ("catalog.apps", "catalog.search"))
+                discovery_calls += int(method in ("catalog.apps", "catalog.search", "catalog.metadata"))
                 in_flight.add(call_id)
                 remaining = limits.timeout_seconds - (time.monotonic() - start)
                 future = pool.submit(perform, method, message, remaining)
