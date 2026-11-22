@@ -17,7 +17,7 @@ def main() -> None:
         """Analyze Pendo with generated JavaScript, not a fixed set of samples.
 
         Exposes these read-only JavaScript methods inside one tool invocation:
-        - await pendo.help('workflow'|'syntax'|'sources'|'examples'|'troubleshooting')
+        - await pendo.help('workflow'|'syntax'|'sources'|'examples'|'troubleshooting'|'grammar'|'patterns'|'pattern:<name>')
         - await pendo.catalog.search({type:'pages'|'features'|'trackTypes'|'guides',
                                       query:'checkout', appId?:'123', limit?:20})
         - await pendo.catalog.apps() // observed App IDs only, NOT all apps
