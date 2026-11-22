@@ -31,3 +31,5 @@ packages = ["src/aggdsl"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/aggdsl/codemode_worker.cjs" = "aggdsl/codemode_worker.cjs"
+"skills/aggdsl/references/grammar.md" = "aggdsl/codemode_grammar.md"
+"skills/aggdsl/patterns" = "aggdsl/codemode_patterns"
