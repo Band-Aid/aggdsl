@@ -33,7 +33,7 @@ _RESOURCES = {
 _GUIDE_NAMES = {
     "workflow": (
         "Discover with pendo.catalog.search({type:'features',query:'checkout'}) "
-        "or pendo.catalog.apps(); inspect pendo.help('syntax'|'sources'|'examples'); "
+        "or pendo.catalog.apps(); inspect pendo.help('grammar'|'patterns'|'pattern:<name>'); "
         "call pendo.aggdsl.validate(dsl) and correct errors; then "
         "await pendo.aggdsl.run(dsl). Return a small summary, not raw visitor data. "
         "Only actual returned entity IDs should be used in queries."
