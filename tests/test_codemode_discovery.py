@@ -168,7 +168,7 @@ def test_ai_can_discover_validate_and_execute_unknown_query_in_one_call():
     code = """
 const discovered = await pendo.catalog.search({type:'features',query:'checkout',limit:5});
 const id = discovered.items[0].id;
-const appId = Number(discovered.items[0].appId);
+const appId = discovered.items[0].appId; // keep potentially 17-digit IDs as strings
 const dsl = [
   'FROM event([source=featureEvents, appId=' + appId + ', featureId="' + id + '", blacklist="apply"])',
   'TIMESERIES period=dayRange first=now() count=-7',
