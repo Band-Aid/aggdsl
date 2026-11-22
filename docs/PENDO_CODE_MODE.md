@@ -58,7 +58,7 @@ across all apps?". Measured against the mock:
 | Model tool calls | 9 | 1 |
 | Tool-result bytes entering the conversation | 17,853 | 794 |
 
-The Code Mode side also costs the roughly 1.9 KB program the model writes. These
+The Code Mode side also costs the roughly 1.7 KB program the model writes. These
 numbers come from synthetic data and show the mechanism only; they are not a
 measurement of the real Pendo MCP server.
 
