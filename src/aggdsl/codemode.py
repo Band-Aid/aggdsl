@@ -191,6 +191,16 @@ def execute_code(
             return backend.run(dsl, timeout_seconds=remaining)
         if method == "catalog.apps":
             return catalog.apps(timeout_seconds=remaining)
+        if method == "catalog.metadata":
+            options = message.get("options")
+            if not isinstance(options, dict):
+                raise CodeModeError("catalog.metadata requires an options object")
+            return catalog.metadata(
+                kind=options.get("kind", "visitor"),
+                query=options.get("query", ""),
+                limit=options.get("limit", 40),
+                timeout_seconds=remaining,
+            )
         if method == "catalog.search":
             options = message.get("options")
             if not isinstance(options, dict):
@@ -247,7 +257,7 @@ def execute_code(
             if kind == "call":
                 method = message.get("method")
                 call_id = message.get("id")
-                if method not in ("aggdsl.run", "aggdsl.validate", "catalog.search", "catalog.apps", "help") or (
+                if method not in ("aggdsl.run", "aggdsl.validate", "catalog.search", "catalog.apps", "catalog.metadata", "help") or (
                         type(call_id) is not int or call_id < 1 or call_id in in_flight):
                     raise CodeModeError("Unsupported JavaScript bridge request")
                 if total_calls >= limits.max_calls:
@@ -256,7 +266,7 @@ def execute_code(
                     raise CodeModeError(f"Maximum Code Mode calls exceeded ({limits.max_calls})")
                 if method == "aggdsl.run" and aggregation_calls >= limits.max_agg_calls:
                     raise CodeModeError(f"Maximum aggregation calls exceeded ({limits.max_agg_calls})")
-                if method in ("catalog.apps", "catalog.search") and discovery_calls >= limits.max_discovery_calls:
+                if method in ("catalog.apps", "catalog.search", "catalog.metadata") and discovery_calls >= limits.max_discovery_calls:
                     raise CodeModeError(f"Maximum catalog calls exceeded ({limits.max_discovery_calls})")
                 total_calls += 1
                 aggregation_calls += int(method == "aggdsl.run")
