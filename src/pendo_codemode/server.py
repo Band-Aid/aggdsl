@@ -51,7 +51,15 @@ def connect(args: argparse.Namespace) -> McpClient:
 
 def build_catalog(client: McpClient, args: argparse.Namespace) -> Catalog:
     tools = [Tool.from_mcp(raw) for raw in client.list_tools()]
-    return Catalog(tools, allow_writes=args.allow_writes, allow_tools=args.allow_tool)
+    defaults = {}
+    for item in args.default:
+        key, separator, value = item.partition("=")
+        if not separator or not key:
+            raise McpError(f"--default expects NAME=VALUE, got {item!r}")
+        defaults[key] = value
+    if args.mock:
+        defaults.setdefault("subId", "mock-sub")
+    return Catalog(tools, allow_writes=args.allow_writes, allow_tools=args.allow_tool, defaults=defaults)
 
 
 def tool_definitions(catalog: Catalog, limits: Limits) -> list[dict[str, Any]]:
@@ -63,20 +71,28 @@ def tool_definitions(catalog: Catalog, limits: Limits) -> list[dict[str, Any]]:
         "results never enter the conversation. console.log output is returned as `logs`. "
         f"Limits: {limits.max_calls} tool calls, {int(limits.timeout_seconds)}s, "
         f"{limits.max_output_bytes // 1000} KB returned. No network, files or imports. "
-        "Use `search` first if you do not know a tool's arguments.\n\nTools:\n" + catalog.index()
+        "ALWAYS call `search` for a tool's arguments and result shape before using it; never guess them."
+        + (f" Pre-set arguments you may omit: {', '.join(catalog.defaults)}." if catalog.defaults else "")
+        + "\n\nTools:\n" + catalog.index()
     )
     return [
         {
             "name": "search",
             "description": (
-                "Find Pendo tools by keyword and get their TypeScript signatures for use in `execute`. "
-                "An empty query lists the first tools."
+                "Find Pendo tools by keyword and get their TypeScript signatures, including what each "
+                "returns, for use in `execute`. Pass an exact tool name with detail='full' for its complete "
+                "documentation."
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Keywords or an exact tool name"},
                     "limit": {"type": "integer", "description": "Maximum tools to return (default 8)"},
+                    "detail": {
+                        "type": "string",
+                        "enum": ["summary", "signature", "full"],
+                        "description": "summary: one line each; signature (default): arguments and returns; full: everything",
+                    },
                 },
             },
             "annotations": {"readOnlyHint": True},
@@ -87,7 +103,11 @@ def tool_definitions(catalog: Catalog, limits: Limits) -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "code": {"type": "string", "description": "Body of an async function; use `return`."}
+                    "code": {"type": "string", "description": "Body of an async function; use `return`."},
+                    "intent": {
+                        "type": "string",
+                        "description": "The task in under 20 words; passed to Pendo with each call for its usage analytics.",
+                    },
                 },
                 "required": ["code"],
             },
@@ -101,10 +121,18 @@ def handle_call(name: str, arguments: dict[str, Any], *, catalog: Catalog, clien
     if name == "search":
         limit = arguments.get("limit")
         limit = limit if isinstance(limit, int) and 0 < limit <= 50 else 8
-        return text_result(catalog.describe(str(arguments.get("query") or ""), limit))
+        detail = arguments.get("detail") if arguments.get("detail") in {"summary", "full"} else "signature"
+        return text_result(catalog.describe(str(arguments.get("query") or ""), limit, detail))
     if name == "execute":
         try:
-            output = execute_code(arguments.get("code"), catalog=catalog, backend=McpBackend(client), limits=limits)
+            intent = arguments.get("intent")
+            output = execute_code(
+                arguments.get("code"),
+                catalog=catalog,
+                backend=McpBackend(client),
+                limits=limits,
+                intent=intent if isinstance(intent, str) else None,
+            )
             # The per-call trace is for humans at the CLI; the model only needs the answer.
             del output["calls"]
             if not output["logs"]:
@@ -120,7 +148,12 @@ def _add_upstream_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--command", help="Command that runs an MCP stdio server or bridge (or PENDO_MCP_COMMAND)")
     parser.add_argument("--mock", action="store_true", help="Use the bundled synthetic Pendo MCP server")
     parser.add_argument("--allow-writes", action="store_true", help="Also expose tools not marked read-only")
-    parser.add_argument("--allow-tool", action="append", default=[], metavar="NAME", help="Expose one non-read-only tool")
+    parser.add_argument(
+        "--allow-tool", action="append", default=[], metavar="NAME", help="Expose non-read-only tools by name or glob"
+    )
+    parser.add_argument(
+        "--default", action="append", default=[], metavar="NAME=VALUE", help="Pre-set an argument, e.g. subId=123"
+    )
     parser.add_argument("--timeout", type=float, default=60.0, help="Total seconds per program")
     parser.add_argument("--max-calls", type=int, default=25, help="Tool calls per program")
 
@@ -132,8 +165,13 @@ def serve_main(argv: list[str] | None = None) -> int:
     limits = Limits(timeout_seconds=args.timeout, max_calls=args.max_calls)
     try:
         client = connect(args)
+    except McpError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    try:
         catalog = build_catalog(client, args)
     except McpError as exc:
+        client.close()
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(f"pendo-codemode: {len(catalog.tools)} tools exposed", file=sys.stderr)
@@ -160,6 +198,8 @@ def cli_main(argv: list[str] | None = None) -> int:
     run.add_argument("file", nargs="?", help="JavaScript file; reads standard input if omitted")
     tools = sub.add_parser("tools", help="Print tool signatures as the model would see them")
     tools.add_argument("query", nargs="?", default="")
+    tools.add_argument("--detail", choices=["summary", "signature", "full"], default="signature")
+    run.add_argument("--intent", help="One-line task summary forwarded to Pendo as userQuery")
     for command in (run, tools):
         _add_upstream_flags(command)
     args = parser.parse_args(argv)
@@ -171,7 +211,7 @@ def cli_main(argv: list[str] | None = None) -> int:
     try:
         catalog = build_catalog(client, args)
         if args.action == "tools":
-            print(catalog.describe(args.query, limit=50 if not args.query else 8))
+            print(catalog.describe(args.query, 200 if not args.query else 8, args.detail))
             if catalog.blocked:
                 print(f"\n// hidden (not read-only): {', '.join(catalog.blocked)}")
             return 0
@@ -181,6 +221,7 @@ def cli_main(argv: list[str] | None = None) -> int:
             catalog=catalog,
             backend=McpBackend(client),
             limits=Limits(timeout_seconds=args.timeout, max_calls=args.max_calls),
+            intent=args.intent,
         )
     except (CodeModeError, McpError) as exc:
         print(f"error: {exc}", file=sys.stderr)

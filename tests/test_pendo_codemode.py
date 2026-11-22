@@ -21,6 +21,7 @@ needs_node = pytest.mark.skipif(not shutil.which("node"), reason="Node.js is req
 
 
 def mock_catalog(**policy) -> Catalog:
+    policy.setdefault("defaults", {"subId": "mock-sub"})
     return Catalog([Tool.from_mcp(spec) for spec in mock_pendo.list_tools()], **policy)
 
 
@@ -60,19 +61,43 @@ def test_ts_type_covers_common_json_schema():
     assert ts_type({"$ref": "#/defs/x"}) == "unknown"
 
 
-def test_signature_marks_required_arguments_and_quotes_odd_names():
-    signature = mock_catalog().tools["activityQuery"].signature()
-    assert "pendo.activityQuery(args: {" in signature
-    assert "  appId: string; // Application ID" in signature
-    assert '  groupBy?: ("entity" | "account")[];' in signature
-    odd = Tool.from_mcp({"name": "get-thing", "inputSchema": {"type": "object", "properties": {"a-b": {}}}})
-    assert 'pendo["get-thing"](args: {' in odd.signature() and '"a-b"?: unknown;' in odd.signature()
+def test_signature_keeps_returns_and_hides_telemetry_argument():
+    catalog = mock_catalog()
+    signature = catalog.signature(catalog.tools["entityUsage"])
+    assert "pendo.entityUsage(args: {" in signature
+    assert "  entityId: string; // The Pendo page, feature, or track event ID." in signature
+    assert '  groupBy?: "visitor" | "account";' in signature
+    assert " * RETURNS: - summary: totalNumEvents" in signature
+    assert "USE FOR" not in signature and "userQuery" not in signature
+    assert "USE FOR: 'How many people used it'" in catalog.signature(catalog.tools["entityUsage"], "full")
+    odd = Catalog([Tool.from_mcp({"name": "get-thing", "annotations": {"readOnlyHint": True},
+                                  "inputSchema": {"type": "object", "properties": {"a-b": {}}}})])
+    assert 'pendo["get-thing"](args: {' in odd.describe() and '"a-b"?: unknown;' in odd.describe()
+
+
+def test_repeated_parameter_types_are_declared_once():
+    text = mock_catalog().describe("usage", limit=20)
+    assert text.count("dateRange: DateRange;") >= 3 and "compareToDateRange?: DateRange;" in text
+    assert text.count("type DateRange = {") == 1 and text.count("type ProductArea = ") == 1
+    assert 'type?: "absolute" | "relative";' in text.split("// shared types")[1]
+    # A lookup that uses no shared type does not pay for their definitions.
+    assert "shared types" not in mock_catalog().describe("segmentList", limit=1)
+
+
+def test_defaults_make_arguments_optional_and_are_bound_at_call_time():
+    catalog = mock_catalog(defaults={"subId": "sub-1"})
+    assert '  subId?: string; // pre-set to "sub-1"' in catalog.signature(catalog.tools["segmentList"])
+    assert "  subId: string;" in mock_catalog(defaults={}).signature(catalog.tools["segmentList"])
+    assert catalog.bind("segmentList", {}, "find paying segment") == {"subId": "sub-1", "userQuery": "find paying segment"}
+    assert catalog.bind("segmentList", {"subId": "other"}) == {"subId": "other"}
+    assert catalog.bind("listSubscriptions", {}) == {}  # a default is only sent to tools that take it
 
 
 def test_only_read_only_tools_are_exposed_by_default():
     catalog = mock_catalog()
     assert "createSegment" not in catalog.tools and catalog.blocked == ["createSegment"]
     assert "createSegment" in mock_catalog(allow_tools=["createSegment"]).tools
+    assert "createSegment" in mock_catalog(allow_tools=["create*"]).tools
     assert "createSegment" in mock_catalog(allow_writes=True).tools
     # A tool with no annotations is not assumed to be safe.
     assert Catalog([Tool.from_mcp({"name": "mystery"})]).names() == []
@@ -80,11 +105,22 @@ def test_only_read_only_tools_are_exposed_by_default():
 
 def test_search_ranks_name_matches_and_splits_camel_case():
     catalog = mock_catalog()
-    assert catalog.search("activity")[0].name == "activityQuery"
-    assert catalog.search("accountQuery")[0].name == "accountQuery"
-    assert [t.name for t in catalog.search("segments saved")] == ["segmentList"]
+    assert catalog.search("guide effectiveness")[0].name == "guideEffectivenessMetrics"
+    assert catalog.search("listAccounts")[0].name == "listAccounts"
+    assert catalog.search("segments")[0].name == "segmentList"
     assert "No Pendo tool matches" in catalog.describe("zzzz")
-    assert catalog.index().count("\n") == len(catalog.tools) - 1
+    assert catalog.describe("segments", limit=1, detail="summary") == "- pendo.segmentList: List or search the subscription's segments."
+
+
+def test_index_stays_small_for_a_server_with_many_tools():
+    small = mock_catalog().index()
+    assert "- pendo.appUsage: Get per-visitor or per-account app usage metrics for a date range." in small
+    read = {"readOnlyHint": True}
+    many = Catalog(Tool.from_mcp({"name": f"{verb}Thing{i}", "description": "x" * 5000, "annotations": read})
+                   for verb in ("list", "get", "query") for i in range(45))
+    index = many.index()
+    assert index.splitlines()[0].startswith("- list: listThing0, listThing1,")
+    assert len(index.splitlines()) == 3 and len(index) < 3000
 
 
 def test_unwrap_prefers_structured_content_then_json_text():
@@ -94,27 +130,37 @@ def test_unwrap_prefers_structured_content_then_json_text():
     assert unwrap_tool_result({"content": [{"type": "text", "text": "boom"}], "isError": True}) == (False, "boom")
 
 
+def test_mock_rejects_arguments_the_real_schema_would_reject():
+    ok, message = unwrap_tool_result(mock_pendo.call_tool("entityUsage", {"subId": "s", "entityType": "widget", "days": 3}))
+    assert not ok and "args.entityId: is required" in message and "must be one of" in message
+    assert "args.days: unknown argument" in message
+
+
 # --- executor ----------------------------------------------------------------
+
+RANGE = "{ type: 'relative', lastNDays: 30 }"
 
 
 @needs_node
 def test_chained_calls_return_only_the_summary():
     backend = MockBackend()
     output = run(
-        """
-const { applications } = await pendo.list_all_applications();
-const usage = await pendo.activityQuery({ appId: applications[0].id, limit: 1 });
-const { entities } = await pendo.searchEntities({ appId: applications[0].id });
-const name = entities.find((e) => e.id === usage.rows[0].featureId).name;
-return { app: applications[0].name, topFeature: name };
+        f"""
+const top = await pendo.aggregateEntityUsage({{ entityType: 'feature', dateRange: {RANGE}, limit: 1 }});
+const usage = await pendo.entityUsage({{
+  entityType: 'feature', entityId: top.rows[0].entityId, dateRange: {RANGE}, groupBy: 'account', limit: 1
+}});
+return {{ feature: top.rows[0].entityName, topAccount: usage.rows[0].accountId }};
 """,
         backend=backend,
+        intent="top account of the top feature",
     )
-    assert output["result"] == {"app": "Acme Web", "topFeature": "Export CSV"}
-    assert [name for name, _args in backend.calls] == ["list_all_applications", "activityQuery", "searchEntities"]
-    assert output["stats"]["tool_calls"] == 3
-    assert output["stats"]["output_bytes"] < output["stats"]["upstream_bytes"]
-    assert [call["ok"] for call in output["calls"]] == [True, True, True]
+    assert output["result"] == {"feature": "Filter Results", "topAccount": "Example Co 00"}
+    assert [name for name, _args in backend.calls] == ["aggregateEntityUsage", "entityUsage"]
+    # Defaults and the task summary were added by the host, not by the program.
+    assert all(args["subId"] == "mock-sub" and args["userQuery"] == "top account of the top feature" for _n, args in backend.calls)
+    assert output["stats"]["tool_calls"] == 2
+    assert [call["ok"] for call in output["calls"]] == [True, True]
 
 
 @needs_node
@@ -130,17 +176,11 @@ def test_promise_all_runs_upstream_calls_concurrently():
 
 @needs_node
 def test_tool_failure_rejects_and_can_be_caught():
-    class Failing:
-        def call_tool(self, name, arguments, *, timeout):
-            raise CodeModeError("upstream said no")
-
-    output = run(
-        "try { await pendo.segmentList(); } catch (e) { return e.message; }", backend=Failing()
-    )
-    assert output["result"] == "segmentList failed: upstream said no"
+    output = run("try { await pendo.entityUsage({ entityType: 'page' }); } catch (e) { return e.message; }")
+    assert output["result"].startswith("entityUsage failed: Invalid arguments for entityUsage: args.entityId: is required")
     assert output["calls"][0]["ok"] is False
-    with pytest.raises(CodeModeError, match="JavaScript error: segmentList failed"):
-        run("await pendo.segmentList();", backend=Failing())
+    with pytest.raises(CodeModeError, match="JavaScript error: entityUsage failed"):
+        run("await pendo.entityUsage({ entityType: 'page' });")
 
 
 @needs_node
@@ -160,7 +200,7 @@ def test_hidden_and_unknown_tools_cannot_be_called():
 @needs_node
 def test_arguments_must_be_an_object():
     with pytest.raises(CodeModeError, match="takes one arguments object"):
-        run("return await pendo.accountQuery('acct-001');")
+        run("return await pendo.segmentList('paying');")
 
 
 @needs_node
@@ -178,7 +218,7 @@ def test_call_limit_stops_the_program():
 @needs_node
 def test_oversized_tool_result_rejects_that_call():
     output = run(
-        "try { await pendo.accountQuery(); } catch (e) { return e.message; }",
+        "try { await pendo.listAccounts({ limit: 30 }); } catch (e) { return e.message; }",
         limits=Limits(max_call_result_bytes=500),
     )
     assert "result too large" in output["result"]
@@ -187,7 +227,7 @@ def test_oversized_tool_result_rejects_that_call():
 @needs_node
 def test_oversized_output_and_code_are_rejected():
     with pytest.raises(CodeModeError, match="result too large"):
-        run("return (await pendo.accountQuery()).accounts;", limits=Limits(max_output_bytes=1000))
+        run("return (await pendo.listAccounts({ limit: 30 })).rows;", limits=Limits(max_output_bytes=1000))
     with pytest.raises(CodeModeError, match="size limit"):
         run("return 123456789;", limits=Limits(max_code_bytes=4))
 
@@ -209,6 +249,36 @@ def test_worker_has_no_host_access():
     ]
 
 
+RECIPES = sorted(Path("examples/pendo_code_mode").glob("*.js"))
+
+
+@needs_node
+@pytest.mark.parametrize("recipe", RECIPES, ids=lambda path: path.stem)
+def test_recipes_run_with_arguments_the_real_schemas_accept(recipe):
+    """The mock validates every call against the real argument schema."""
+    output = run(recipe.read_text(encoding="utf-8"))
+    assert all(call["ok"] for call in output["calls"]), output["calls"]
+    assert "error" not in output["result"]
+    assert output["stats"]["output_bytes"] < 4000
+
+
+@needs_node
+def test_recipe_results_are_what_the_question_asks():
+    read = lambda name: Path(f"examples/pendo_code_mode/{name}.js").read_text(encoding="utf-8")
+    adoption = run(read("feature_adoption_by_account"))
+    assert adoption["stats"]["tool_calls"] == 6 and len(adoption["result"]["features"]) == 5
+    assert all(0 < f["topAccountSharePct"] <= 100 and len(f["topAccounts"]) == 3 for f in adoption["result"]["features"])
+    movers = run(read("usage_movers"))["result"]
+    assert movers["gainers"] and all(row["change"] > 0 for row in movers["gainers"])
+    assert all(row["change"] < 0 for row in movers["decliners"])
+    assert [row["change"] for row in movers["gainers"]] == sorted((row["change"] for row in movers["gainers"]), reverse=True)
+    audit = run(read("guide_audit"))["result"]
+    assert audit["lowestEngagement"][0]["engagementPct"] == min(g["engagementPct"] for g in audit["lowestEngagement"])
+    brief = run(read("account_brief"))
+    assert brief["result"]["account"] == "Example Co 07" and brief["stats"]["tool_calls"] == 10
+    assert len(brief["result"]["topFeatureAdoption"]) == 5
+
+
 # --- over the wire -----------------------------------------------------------
 
 
@@ -226,17 +296,19 @@ def test_server_exposes_two_tools_over_a_real_mcp_chain():
     try:
         tools = {tool["name"]: tool for tool in client.list_tools()}
         assert sorted(tools) == ["execute", "search"]
-        assert "- pendo.activityQuery: Aggregate feature usage" in tools["execute"]["description"]
+        assert "- pendo.entityUsage: Get usage analytics for one known page" in tools["execute"]["description"]
+        assert "Pre-set arguments you may omit: subId." in tools["execute"]["description"]
         assert "createSegment" not in tools["execute"]["description"]
         assert tools["execute"]["annotations"] == {"readOnlyHint": True}
 
-        ok, signatures = unwrap_tool_result(client.call_tool("search", {"query": "accounts plan"}))
-        assert ok and signatures.startswith("/** Look up accounts")
+        ok, signatures = unwrap_tool_result(client.call_tool("search", {"query": "accounts segment", "limit": 1}))
+        assert ok and "pendo.listAccounts(args: {" in signatures and "RETURNS: - summary: numAccounts" in signatures
+        ok, full = unwrap_tool_result(client.call_tool("search", {"query": "appUsage", "limit": 1, "detail": "full"}))
+        assert ok and "WORKFLOW: To get more rows than limit allows" in full
 
-        code = Path("examples/pendo_code_mode/top_features_by_account.js").read_text(encoding="utf-8")
-        ok, output = unwrap_tool_result(client.call_tool("execute", {"code": code}))
-        assert ok and output["stats"]["tool_calls"] == 9
-        assert [row["feature"] for row in output["result"]] == ["Export CSV", "Share Link", "Connect Integration"]
+        code = Path("examples/pendo_code_mode/account_brief.js").read_text(encoding="utf-8")
+        ok, output = unwrap_tool_result(client.call_tool("execute", {"code": code, "intent": "brief one account"}))
+        assert ok and output["stats"]["tool_calls"] == 10 and output["result"]["activity"]["daysActive"] > 0
         assert "calls" not in output and "logs" not in output
 
         ok, message = unwrap_tool_result(client.call_tool("execute", {"code": "return pendo.createSegment({name:'x'})"}))
@@ -247,7 +319,7 @@ def test_server_exposes_two_tools_over_a_real_mcp_chain():
 
 @needs_node
 def test_server_can_opt_in_to_one_write_tool():
-    client = codemode_server("--allow-tool", "createSegment")
+    client = codemode_server("--allow-tool", "createSegment", "--default", "subId=sub-9")
     try:
         execute = next(tool for tool in client.list_tools() if tool["name"] == "execute")
         assert execute["annotations"] == {"readOnlyHint": False}
@@ -306,8 +378,8 @@ def test_streamable_http_client_handles_json_and_sse(http_url):
     client.initialize()
     assert client.server_info == {"name": "http-mock"}
     assert len(client.list_tools()) == len(mock_pendo.TOOLS)
-    ok, value = unwrap_tool_result(client.call_tool("segmentList", {}))
-    assert ok and len(value["segments"]) == 3
+    ok, value = unwrap_tool_result(client.call_tool("listSubscriptions", {}))
+    assert ok and value == [{"subscriptionId": "mock-sub", "subscriptionName": "Mock subscription"}]
     last = _Handler.seen[-1]["headers"]
     assert last["Mcp-Session-Id"] == "session-1" and last["Mcp-Protocol-Version"] == "2025-06-18"
 

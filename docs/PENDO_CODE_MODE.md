@@ -23,6 +23,7 @@ enter the conversation.
 | Model must know | aggDSL | Nothing new: tool schemas arrive as TypeScript |
 | Upstream calls | One at a time | Concurrent (`Promise.all` really is parallel) |
 | Dependencies | `mcp` SDK | None (small built-in MCP client and server) |
+| Scale | One method | Built for the real server's ~130 tools |
 
 Nothing in `src/pendo_codemode/` imports `aggdsl`, and no Pendo tool name or schema is
 hard-coded: the catalog is built from the upstream `tools/list`, so new Pendo MCP
@@ -36,31 +37,83 @@ model ── search / execute ──> pendo-code-mcp ── tools/call ──> P
                             Node worker (no credentials, no network API)
 ```
 
+## What the real Pendo MCP server looks like
+
+Checked against a live connection (November 2026):
+
+- About 130 tools: usage analytics, guides, segments, feedback, Orchestrate journeys,
+  agent analytics, session replay and more, including roughly 40 that write.
+- Descriptions are long and structured (`USE FOR`, `EXAMPLES`, `NOT FOR`, `WORKFLOW`,
+  `RETURNS`). Single definitions run to several kilobytes, so the full tool list is a
+  large fixed cost in every conversation before any question is asked.
+- Every analytics tool needs `subId`, and every tool accepts an optional `userQuery`
+  task summary for Pendo's own usage analytics.
+- The same parameter types (`dateRange`, `productArea`, `segmentPipeline`) are
+  spelled out in full on tool after tool.
+- Answers are spread over tools on purpose: rank with `aggregateEntityUsage`, then
+  call `entityUsage` once per entity for the per-account breakdown, and so on. That
+  is where the tool-call count comes from.
+
+Code Mode is shaped around those facts:
+
+| Real-server trait | What Code Mode does |
+| --- | --- |
+| 130 definitions | Two definitions. With more than 25 tools the index inside `execute` is names only, grouped by verb. |
+| Multi-kilobyte descriptions | `search` returns a short signature that keeps the `RETURNS` section, because code needs the result shape. `detail: "full"` returns everything for one tool. |
+| Repeated parameter types | Declared once as shared types (`DateRange`, `ProductArea`) and referenced by name. |
+| `subId` everywhere | `--default subId=<id>` pre-sets it; programs leave it out. |
+| `userQuery` telemetry | Hidden from signatures. `execute` takes an `intent` and the host adds it to every call, so Pendo's analytics still see the task. |
+| Fan-out by design | `Promise.all` over the per-entity calls, joined in code. |
+
+## Recipes
+
+[`examples/pendo_code_mode/`](../examples/pendo_code_mode/) holds four programs written
+against the real tool names, arguments and result shapes:
+
+| Recipe | Question | Calls replaced |
+| --- | --- | --- |
+| `feature_adoption_by_account.js` | Which accounts drive the most-used features, and how concentrated is each? | 6 |
+| `usage_movers.js` | What grew and dropped versus the previous period, across pages, features and track events? | 6 |
+| `guide_audit.js` | Which live guides reach many people but are ignored or dismissed? | 2, a few hundred rows |
+| `account_brief.js` | How is one account using the product? | 10 |
+
+How far they are verified:
+
+- All four run in the test suite against the mock, which rejects any call the real
+  argument schema would reject.
+- The first three were also run over responses recorded from live calls to a Pendo
+  demo subscription (11 calls, with small `limit` values), so the result shapes they
+  read are the real ones.
+- `account_brief.js` relies on `listAccounts` search and `appUsage` shapes that were
+  each seen live, but the whole program has only run against the mock.
+- No recipe has run end to end through `pendo-code-mcp` against the live server; this
+  environment has no credential for it.
+
 ## Try it without Pendo
 
 Requires Python >= 3.10 and Node.js >= 22.13.
 
 ```bash
 pip install -e .
-pendo-code tools --mock                 # the API as the model sees it
-pendo-code run --mock examples/pendo_code_mode/top_features_by_account.js
+pendo-code tools --mock "guide effectiveness"     # signatures as the model sees them
+pendo-code tools --mock appUsage --detail full
+pendo-code run --mock examples/pendo_code_mode/account_brief.js
 ```
 
-`--mock` starts a bundled stand-in Pendo MCP server with synthetic data. Its tool names
-follow Pendo's public tool list, but its argument and result shapes are simplified
-inventions.
+`--mock` starts a bundled stand-in server. It models ten tools with the real argument
+schemas and result shapes, condensed descriptions and synthetic data.
 
-The example answers "which enterprise accounts drive the three most-used features
-across all apps?". Measured against the mock:
+Measured on the mock, which understates the real gap because its tables are small:
 
-| | Direct tool calls | Code Mode |
+| Recipe | Model tool calls: direct → Code Mode | Result bytes into the conversation |
 | --- | --- | --- |
-| Model tool calls | 9 | 1 |
-| Tool-result bytes entering the conversation | 17,853 | 794 |
+| `feature_adoption_by_account.js` | 6 → 1 | 3,863 → 1,526 |
+| `usage_movers.js` | 6 → 1 | 13,421 → 1,259 |
+| `guide_audit.js` | 2 → 1 | 4,370 → 2,448 |
+| `account_brief.js` | 10 → 1 | 4,387 → 875 |
 
-The Code Mode side also costs the roughly 1.7 KB program the model writes. These
-numbers come from synthetic data and show the mechanism only; they are not a
-measurement of the real Pendo MCP server.
+Each program is itself 1.3 to 2.2 KB that the model has to write. Tool definitions for
+the ten mock tools are 18.8 KB raw against 2.7 KB for `search` plus `execute`.
 
 ## Connect to the real Pendo MCP server
 
@@ -68,20 +121,20 @@ measurement of the real Pendo MCP server.
 # Streamable HTTP with a bearer token (token is read from the environment only)
 export PENDO_MCP_URL='<your Pendo MCP endpoint>'
 export PENDO_MCP_TOKEN='<access token>'
-pendo-code-mcp
+pendo-code-mcp --default subId=<subscription id>
 
 # or through any stdio MCP bridge that handles the OAuth sign-in for you
 export PENDO_MCP_COMMAND='npx mcp-remote <your Pendo MCP endpoint>'
-pendo-code-mcp
+pendo-code-mcp --default subId=<subscription id>
 ```
 
 Register `pendo-code-mcp` as a stdio MCP server in your client. Use
 `pendo-code tools` with the same settings to inspect the generated API first.
 
 Only tools the upstream marks `readOnlyHint: true` are exposed. Others are listed on
-stderr at startup and stay hidden unless you pass `--allow-tool NAME` or
-`--allow-writes`. `execute` advertises itself as read-only exactly when no write tool
-was let in.
+stderr at startup and stay hidden unless you pass `--allow-tool` (a name or a glob
+such as `'list*'`) or `--allow-writes`. `execute` advertises itself as read-only
+exactly when no write tool was let in.
 
 ## Limits and safety
 
@@ -101,15 +154,19 @@ logging.
 
 ## Not done
 
-- Not run against the live Pendo MCP server. The transport, catalog and policy are
-  tested against the mock over stdio and against a local HTTP server (JSON and SSE).
+- Not run end to end against the live Pendo MCP server (see Recipes for what was
+  checked).
+- Whether the real server sets `readOnlyHint` was not visible from here. If it does
+  not, every tool starts hidden; `--allow-tool 'list*' --allow-tool 'get*'` and
+  similar globs are the workaround.
 - No built-in OAuth flow: supply a token or use a stdio bridge.
-- If the real server does not set `readOnlyHint`, every tool starts hidden and must
-  be allowed explicitly.
-- Tool results that are not JSON are passed to JavaScript as plain text.
-- No benchmark against the ontology experiment's real questions yet; the
-  `stats` block in each `execute` result (tool calls, upstream bytes, output bytes) is
-  there to make that comparison easy.
+- The real tools publish no output schema, so results are typed `unknown` and the
+  model relies on the `RETURNS` text.
+- Some tools return text rather than JSON; those reach JavaScript as plain strings.
+- No pagination helper. Programs loop on `meta.hasMore` or `totalCount` themselves.
+- No benchmark against the ontology experiment's questions; the `stats` block in each
+  `execute` result (tool calls, upstream bytes, output bytes) is there to make that
+  comparison easy.
 
 ## Development
 

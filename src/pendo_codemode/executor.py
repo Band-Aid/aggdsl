@@ -69,9 +69,13 @@ def execute_code(
     catalog: Catalog,
     backend: ToolBackend,
     limits: Limits | None = None,
+    intent: str | None = None,
     node: str = "node",
 ) -> dict[str, Any]:
     """Run `code` and return {result, logs, calls, stats}.
+
+    `intent` is a one-line task summary; it is forwarded to tools that accept
+    a `userQuery` argument, and the catalog's pre-set defaults are filled in.
 
     `calls` lists each tool call with its duration and result size, so the
     caller can see how much data stayed out of the model's context.
@@ -133,7 +137,7 @@ def execute_code(
             trace.append(entry)
         reply: dict[str, Any] = {"type": "result", "id": call_id}
         try:
-            value = backend.call_tool(tool, args, timeout=max(0.1, remaining()))
+            value = backend.call_tool(tool, catalog.bind(tool, args, intent), timeout=max(0.1, remaining()))
             size = len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8"))
             entry["bytes"] = size
             if size > limits.max_call_result_bytes:

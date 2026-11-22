@@ -2,16 +2,34 @@
 
 The catalog is built from `tools/list`, so Code Mode follows whatever the Pendo
 MCP server exposes; no Pendo tool name or schema is hard-coded here.
+
+The real server has well over a hundred tools whose descriptions run to
+several kilobytes each, so the catalog is tiered: a names-only index, short
+signatures that keep the RETURNS section (code needs the result shape), and
+full detail on request. Parameter types repeated across many tools, such as
+`dateRange`, are declared once as shared types.
 """
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 import json
 import re
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 _IDENT = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
 _WORD = re.compile(r"[a-z0-9]+")
+_SECTION = re.compile(r"^([A-Z][A-Z ]{2,30}):[ \t]*", re.MULTILINE)
+_VERB = re.compile(r"^[a-z]+")
+
+# Telemetry arguments the host fills in itself; they only add noise to signatures.
+INTENT_PARAM = "userQuery"
+
+
+def _squash(text: Any, limit: int) -> str:
+    flat = " ".join(str(text).split())
+    return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
 
 
 @dataclass(frozen=True)
@@ -38,52 +56,60 @@ class Tool:
         return f"pendo.{self.name}" if _IDENT.match(self.name) else f"pendo[{json.dumps(self.name)}]"
 
     @property
-    def summary(self) -> str:
-        first = self.description.split("\n", 1)[0].strip()
-        match = re.match(r"(.+?[.!?])(\s|$)", first)
-        return (match.group(1) if match else first)[:160]
-
-    def signature(self) -> str:
-        """TypeScript declaration of the tool as a function on `pendo`."""
-        lines = []
-        if self.description:
-            lines.append("/** " + " ".join(self.description.split())[:600] + " */")
-        returns = ts_type(self.output_schema) if self.output_schema else "unknown"
+    def properties(self) -> dict[str, Any]:
         properties = self.input_schema.get("properties")
-        if not isinstance(properties, dict) or not properties:
-            lines.append(f"{self.accessor}(args?: {{}}): Promise<{returns}>")
-            return "\n".join(lines)
-        required = set(self.input_schema.get("required") or [])
-        lines.append(f"{self.accessor}(args: {{")
-        for key, schema in properties.items():
-            note = ""
-            if isinstance(schema, dict) and schema.get("description"):
-                note = " // " + " ".join(str(schema["description"]).split())[:200]
-            lines.append(f"  {_key(key)}{'' if key in required else '?'}: {ts_type(schema)};{note}")
-        lines.append(f"}}): Promise<{returns}>")
-        return "\n".join(lines)
+        return properties if isinstance(properties, dict) else {}
+
+    def sections(self) -> dict[str, str]:
+        """Split a description into its lead text and `HEADING:` sections."""
+        parts = _SECTION.split(self.description)
+        found = {"": parts[0].strip()}
+        for heading, body in zip(parts[1::2], parts[2::2]):
+            found[heading.strip()] = body.strip()
+        return found
+
+    @property
+    def summary(self) -> str:
+        lead = " ".join(self.sections()[""].split())
+        match = re.match(r"(.+?[.!?])(\s|$)", lead)
+        return _squash(match.group(1) if match else lead, 160)
 
 
 def _key(name: str) -> str:
     return name if _IDENT.match(name) else json.dumps(name)
 
 
-def ts_type(schema: Any, depth: int = 0) -> str:
+def _shape(schema: Any) -> str:
+    """Canonical form of a schema ignoring prose and defaults, for de-duplication."""
+    if isinstance(schema, dict):
+        return json.dumps(
+            {k: json.loads(_shape(v)) for k, v in sorted(schema.items()) if k not in {"description", "default"}}
+        )
+    if isinstance(schema, list):
+        return json.dumps([json.loads(_shape(v)) for v in schema])
+    return json.dumps(schema)
+
+
+def ts_type(schema: Any, depth: int = 0, shared: Mapping[str, str] | None = None) -> str:
     """Render a JSON Schema as a compact TypeScript type (best effort)."""
     if not isinstance(schema, dict) or depth > 6:
         return "unknown"
+    if shared and depth:
+        name = shared.get(_shape(schema))
+        if name:
+            return name
     if "const" in schema:
         return json.dumps(schema["const"])
     if isinstance(schema.get("enum"), list) and schema["enum"]:
         return " | ".join(json.dumps(v) for v in schema["enum"])
     for union in ("anyOf", "oneOf"):
         if isinstance(schema.get(union), list) and schema[union]:
-            return " | ".join(dict.fromkeys(ts_type(s, depth + 1) for s in schema[union]))
+            return " | ".join(dict.fromkeys(ts_type(s, depth + 1, shared) for s in schema[union]))
     kind = schema.get("type")
     if isinstance(kind, list):
-        return " | ".join(dict.fromkeys(ts_type({**schema, "type": k}, depth + 1) for k in kind))
+        return " | ".join(dict.fromkeys(ts_type({**schema, "type": k}, depth + 1, shared) for k in kind))
     if kind == "array":
-        item = ts_type(schema.get("items"), depth + 1)
+        item = ts_type(schema.get("items"), depth + 1, shared)
         return f"({item})[]" if " " in item and not item.startswith("{") else f"{item}[]"
     if kind == "object" or "properties" in schema:
         properties = schema.get("properties")
@@ -91,7 +117,8 @@ def ts_type(schema: Any, depth: int = 0) -> str:
             return "Record<string, unknown>"
         required = set(schema.get("required") or [])
         parts = [
-            f"{_key(k)}{'' if k in required else '?'}: {ts_type(v, depth + 1)}" for k, v in properties.items()
+            f"{_key(k)}{'' if k in required else '?'}: {ts_type(v, depth + 1, shared)}"
+            for k, v in properties.items()
         ]
         return "{ " + "; ".join(parts) + " }"
     return {"string": "string", "number": "number", "integer": "number", "boolean": "boolean", "null": "null"}.get(
@@ -100,9 +127,9 @@ def ts_type(schema: Any, depth: int = 0) -> str:
 
 
 def _tokens(text: str) -> set[str]:
-    # Split camelCase and snake_case so "activity" finds activityQuery.
+    # Split camelCase and snake_case so "activity" finds activityQuery; fold plurals.
     spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
-    return set(_WORD.findall(spaced.lower()))
+    return {w[:-1] if len(w) > 3 and w.endswith("s") else w for w in _WORD.findall(spaced.lower())}
 
 
 class Catalog:
@@ -114,24 +141,107 @@ class Catalog:
         *,
         allow_writes: bool = False,
         allow_tools: Iterable[str] = (),
+        defaults: Mapping[str, Any] | None = None,
     ) -> None:
-        allowed = set(allow_tools)
+        patterns = list(allow_tools)  # exact names or globs such as "list*"
+        self.defaults: dict[str, Any] = dict(defaults or {})
         self.tools: dict[str, Tool] = {}
         self.blocked: list[str] = []
         for tool in tools:
             if not tool.name:
                 continue
-            if tool.read_only or allow_writes or tool.name in allowed:
+            if tool.read_only or allow_writes or any(fnmatchcase(tool.name, p) for p in patterns):
                 self.tools[tool.name] = tool
             else:
                 self.blocked.append(tool.name)
+        self.shared = self._find_shared_types()
+
+    # -- shared parameter types ------------------------------------------------
+
+    def _find_shared_types(self) -> dict[str, str]:
+        """Name object-like parameter schemas that at least three tools repeat."""
+        uses: Counter[str] = Counter()
+        first_key: dict[str, str] = {}
+        sample: dict[str, Any] = {}
+        for tool in self.tools.values():
+            for key, schema in tool.properties.items():
+                if not isinstance(schema, dict) or len(ts_type(schema)) < 60:
+                    continue
+                shape = _shape(schema)
+                uses[shape] += 1
+                first_key.setdefault(shape, key)
+                sample.setdefault(shape, schema)
+        shared: dict[str, str] = {}
+        taken: set[str] = set()
+        for shape, count in uses.items():
+            if count < 3:
+                continue
+            base = first_key[shape][:1].upper() + re.sub(r"[^A-Za-z0-9]", "", first_key[shape][1:])
+            name, suffix = base, 2
+            while name in taken:
+                name, suffix = f"{base}{suffix}", suffix + 1
+            taken.add(name)
+            shared[shape] = name
+        self._shared_schema = {shared[shape]: sample[shape] for shape in shared}
+        return shared
+
+    def _fields(self, schema: dict[str, Any], comment: int, optional: set[str] = frozenset()) -> list[str]:
+        required = set(schema.get("required") or []) - optional
+        lines = []
+        for key, prop in (schema.get("properties") or {}).items():
+            note = ""
+            if key in self.defaults:
+                note = f" // pre-set to {json.dumps(self.defaults[key])}"
+            elif comment and isinstance(prop, dict) and prop.get("description"):
+                note = " // " + _squash(prop["description"], comment)
+            lines.append(f"  {_key(key)}{'' if key in required else '?'}: {ts_type(prop, 1, self.shared)};{note}")
+        return lines
+
+    # -- rendering --------------------------------------------------------------
+
+    def signature(self, tool: Tool, detail: str = "signature") -> str:
+        """TypeScript declaration of one tool. `detail` is 'signature' or 'full'."""
+        full = detail == "full"
+        sections = tool.sections()
+        doc = [_squash(sections[""], 6000 if full else 400)] if sections[""] else []
+        for heading, body in sections.items():
+            if heading and (full or heading == "RETURNS"):
+                doc.append(f"{heading}: {_squash(body, 6000 if full else 900)}")
+        lines = ["/**"] + [f" * {line}" for line in doc] + [" */"] if doc else []
+        returns = ts_type(tool.output_schema) if tool.output_schema else "unknown"
+        visible = {k: v for k, v in tool.properties.items() if k != INTENT_PARAM}
+        if not visible:
+            lines.append(f"{tool.accessor}(args?: {{}}): Promise<{returns}>")
+            return "\n".join(lines)
+        schema = {**tool.input_schema, "properties": visible}
+        lines.append(f"{tool.accessor}(args: {{")
+        lines.extend(self._fields(schema, 1000 if full else 140, optional=set(self.defaults)))
+        lines.append(f"}}): Promise<{returns}>")
+        return "\n".join(lines)
+
+    def _shared_block(self, text: str) -> str:
+        used = [name for name in self._shared_schema if re.search(rf"\b{name}\b", text)]
+        blocks = []
+        for name in used:
+            schema = self._shared_schema[name]
+            if schema.get("properties"):
+                blocks.append("\n".join([f"type {name} = {{", *self._fields(schema, 140), "}"]))
+            else:
+                blocks.append(f"type {name} = {ts_type(schema, 0, None)}")
+        return "\n\n".join(blocks)
 
     def names(self) -> list[str]:
         return list(self.tools)
 
     def index(self) -> str:
-        """One line per tool; small enough to live in a tool description."""
-        return "\n".join(f"- {t.accessor}: {t.summary}" for t in self.tools.values())
+        """Every tool, small enough to live in a tool description."""
+        if len(self.tools) <= 25:
+            return "\n".join(f"- {t.accessor}: {t.summary}" for t in self.tools.values())
+        groups: dict[str, list[str]] = {}
+        for name in self.tools:
+            verb = _VERB.match(name)
+            groups.setdefault(verb.group(0) if verb else "other", []).append(name)
+        return "\n".join(f"- {verb}: {', '.join(names)}" for verb, names in groups.items())
 
     def search(self, query: str, limit: int = 8) -> list[Tool]:
         wanted = _tokens(query)
@@ -140,7 +250,7 @@ class Catalog:
         scored = []
         for position, tool in enumerate(self.tools.values()):
             name, text = _tokens(tool.name), _tokens(tool.description)
-            params = _tokens(" ".join((tool.input_schema.get("properties") or {}).keys()))
+            params = _tokens(" ".join(tool.properties))
             score = sum(4 * (w in name) + (w in text) + (w in params) for w in wanted)
             if query.strip().lower() == tool.name.lower():
                 score += 100
@@ -148,8 +258,25 @@ class Catalog:
                 scored.append((-score, position, tool))
         return [tool for _score, _position, tool in sorted(scored)[:limit]]
 
-    def describe(self, query: str = "", limit: int = 8) -> str:
+    def describe(self, query: str = "", limit: int = 8, detail: str = "signature") -> str:
         matches = self.search(query, limit)
         if not matches:
             return f"No Pendo tool matches {query!r}. Available tools:\n{self.index()}"
-        return "\n\n".join(tool.signature() for tool in matches)
+        if detail == "summary":
+            return "\n".join(f"- {t.accessor}: {t.summary}" for t in matches)
+        body = "\n\n".join(self.signature(tool, detail) for tool in matches)
+        shared = self._shared_block(body)
+        return f"{body}\n\n// shared types\n{shared}" if shared else body
+
+    # -- call preparation -------------------------------------------------------
+
+    def bind(self, name: str, arguments: dict[str, Any], intent: str | None = None) -> dict[str, Any]:
+        """Add pre-set defaults and the task summary to one call's arguments."""
+        properties = self.tools[name].properties
+        bound = dict(arguments)
+        for key, value in self.defaults.items():
+            if key in properties:
+                bound.setdefault(key, value)
+        if intent and INTENT_PARAM in properties:
+            bound.setdefault(INTENT_PARAM, _squash(intent, 200))
+        return bound

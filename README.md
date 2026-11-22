@@ -174,7 +174,7 @@ program that calls Pendo tools as `await pendo.<tool>(args)` and returns only th
 answer. It does not use aggDSL.
 
 ```bash
-pendo-code run --mock examples/pendo_code_mode/top_features_by_account.js
+pendo-code run --mock examples/pendo_code_mode/account_brief.js
 ```
 
 See [docs/PENDO_CODE_MODE.md](docs/PENDO_CODE_MODE.md) for setup, limits and safety notes.
