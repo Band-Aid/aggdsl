@@ -200,7 +200,12 @@ def cli_main(argv: list[str] | None = None) -> int:
     tools.add_argument("query", nargs="?", default="")
     tools.add_argument("--detail", choices=["summary", "signature", "full"], default="signature")
     run.add_argument("--intent", help="One-line task summary forwarded to Pendo as userQuery")
-    for command in (run, tools):
+    bench = sub.add_parser("bench", help="Compare regular MCP calls with Code Mode (read-only)")
+    bench.add_argument("files", nargs="+", help="JavaScript programs to measure")
+    bench.add_argument("--runs", type=int, default=3, help="Repetitions; the median is reported")
+    bench.add_argument("--simulate-latency-ms", type=float, default=0, help="Extra delay per upstream call")
+    bench.add_argument("--json", action="store_true", help="Print raw measurements instead of a table")
+    for command in (run, tools, bench):
         _add_upstream_flags(command)
     args = parser.parse_args(argv)
     try:
@@ -215,6 +220,35 @@ def cli_main(argv: list[str] | None = None) -> int:
             if catalog.blocked:
                 print(f"\n// hidden (not read-only): {', '.join(catalog.blocked)}")
             return 0
+        if args.action == "bench":
+            from . import bench as benchmark
+
+            if args.allow_writes or args.allow_tool:
+                raise CodeModeError("bench is read-only: do not pass --allow-writes or --allow-tool")
+            limits = Limits(timeout_seconds=args.timeout, max_calls=args.max_calls)
+            backend: Any = McpBackend(client)
+            if args.simulate_latency_ms:
+                backend = benchmark.DelayedBackend(backend, args.simulate_latency_ms)
+            rows = [
+                benchmark.measure(
+                    Path(name),
+                    catalog=catalog,
+                    backend=backend,
+                    raw_tools=[raw for raw in client.list_tools() if raw.get("name") in catalog.tools],
+                    codemode_tools=tool_definitions(catalog, limits),
+                    limits=limits,
+                    runs=max(1, args.runs),
+                )
+                for name in args.files
+            ]
+            if args.json:
+                json.dump(rows, sys.stdout, indent=2)
+                sys.stdout.write("\n")
+            else:
+                upstream = "mock" if args.mock else client.server_info.get("name") or "MCP server"
+                print(benchmark.render(rows, upstream=upstream, tool_count=len(catalog.tools),
+                                       runs=max(1, args.runs), delay_ms=args.simulate_latency_ms))
+            return 0
         code = Path(args.file).read_text(encoding="utf-8") if args.file else sys.stdin.read()
         result = execute_code(
             code,
@@ -223,7 +257,7 @@ def cli_main(argv: list[str] | None = None) -> int:
             limits=Limits(timeout_seconds=args.timeout, max_calls=args.max_calls),
             intent=args.intent,
         )
-    except (CodeModeError, McpError) as exc:
+    except (CodeModeError, McpError, OSError, RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     finally:

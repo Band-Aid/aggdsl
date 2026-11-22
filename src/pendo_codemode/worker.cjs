@@ -11,6 +11,7 @@ const pending = new Map();
 const logs = [];
 let logBytes = 0;
 let nextId = 1;
+let resultsSeen = 0;
 let started = false;
 let finished = false;
 
@@ -49,7 +50,8 @@ function makeApi(tools) {
     const id = nextId++;
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      send({ type: 'call', id, tool, args: args === undefined ? {} : args });
+      // `after` lets the host tell which calls were issued together (same value = same round).
+      send({ type: 'call', id, tool, after: resultsSeen, args: args === undefined ? {} : args });
     });
   };
   return new Proxy(Object.create(null), {
@@ -106,6 +108,7 @@ input.on('line', (line) => {
   if (finished || message.type !== 'result' || !pending.has(message.id)) return;
   const request = pending.get(message.id);
   pending.delete(message.id);
+  resultsSeen += 1;
   if (Object.prototype.hasOwnProperty.call(message, 'error')) {
     request.reject(new Error(message.error));
   } else {

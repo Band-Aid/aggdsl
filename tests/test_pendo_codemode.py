@@ -394,3 +394,41 @@ def test_http_errors_do_not_leak_the_credential(http_url):
 def test_remote_urls_must_use_https():
     with pytest.raises(McpError, match="HTTPS"):
         HttpTransport("http://pendo.example.com/mcp")
+
+
+# --- benchmark ---------------------------------------------------------------
+
+
+@needs_node
+def test_benchmark_replays_the_same_read_calls_directly():
+    from pendo_codemode import bench
+    from pendo_codemode.server import tool_definitions
+
+    catalog, backend = mock_catalog(), MockBackend()
+    row = bench.measure(
+        Path("examples/pendo_code_mode/feature_adoption_by_account.js"),
+        catalog=catalog,
+        backend=bench.DelayedBackend(backend, 100),
+        raw_tools=mock_pendo.list_tools(),
+        codemode_tools=tool_definitions(catalog, Limits()),
+        limits=Limits(),
+        runs=1,
+    )
+    regular, code = row["regular_mcp"], row["code_mode"]
+    assert regular["tool_calls"] == 6 and code["tool_calls"] == 2
+    # One ranking call, then five breakdowns issued together.
+    assert regular["model_turns_sequential"] == 7 and regular["model_turns_parallel"] == 3
+    assert len(backend.calls) == 12 and backend.calls[:6] == backend.calls[6:]  # identical calls on both sides
+    assert regular["upstream_ms_sequential"] >= 600 > regular["upstream_ms_parallel"] >= 200
+    assert code["upstream_ms"] < regular["upstream_ms_sequential"]
+    assert code["definition_bytes"] < regular["definition_bytes"]
+    assert code["conversation_bytes"] == code["search_result_bytes"] + code["program_bytes"] + code["result_bytes"]
+    assert "| feature_adoption_by_account | 6 → 2 |" in bench.render([row], upstream="mock", tool_count=9, runs=1, delay_ms=100)
+
+
+def test_benchmark_refuses_a_catalog_with_write_tools():
+    from pendo_codemode import bench
+
+    with pytest.raises(ValueError, match="read-only"):
+        bench.measure(Path("x.js"), catalog=mock_catalog(allow_writes=True), backend=MockBackend(),
+                      raw_tools=[], codemode_tools=[], limits=Limits())

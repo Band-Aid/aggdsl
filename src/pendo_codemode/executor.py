@@ -129,15 +129,17 @@ def execute_code(
     def remaining() -> float:
         return limits.timeout_seconds - (time.monotonic() - start)
 
-    def run_call(call_id: int, tool: str, args: dict[str, Any]) -> None:
+    def run_call(call_id: int, tool: str, args: dict[str, Any], round_: int) -> None:
         nonlocal upstream_bytes
         began = time.monotonic()
-        entry: dict[str, Any] = {"tool": tool, "ok": False, "ms": 0, "bytes": 0}
+        args = catalog.bind(tool, args, intent)
+        # `round` groups calls the program issued together; `args` are as sent upstream.
+        entry: dict[str, Any] = {"tool": tool, "ok": False, "ms": 0, "bytes": 0, "round": round_, "args": args}
         with stats_lock:
             trace.append(entry)
         reply: dict[str, Any] = {"type": "result", "id": call_id}
         try:
-            value = backend.call_tool(tool, catalog.bind(tool, args, intent), timeout=max(0.1, remaining()))
+            value = backend.call_tool(tool, args, timeout=max(0.1, remaining()))
             size = len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8"))
             entry["bytes"] = size
             if size > limits.max_call_result_bytes:
@@ -161,6 +163,7 @@ def execute_code(
     try:
         send({"type": "start", "code": code, "tools": catalog.names()})
         calls = 0
+        rounds: dict[Any, int] = {}
         while True:
             if remaining() <= 0:
                 raise CodeModeError("Code Mode execution timed out")
@@ -188,7 +191,7 @@ def execute_code(
                 if calls >= limits.max_calls:
                     raise CodeModeError(f"Maximum tool calls exceeded ({limits.max_calls})")
                 calls += 1
-                pool.submit(run_call, call_id, tool, args)
+                pool.submit(run_call, call_id, tool, args, rounds.setdefault(message.get("after"), len(rounds) + 1))
             elif kind == "done":
                 result = message.get("value")
                 serialized = json.dumps(result, ensure_ascii=False, allow_nan=False)
@@ -207,6 +210,7 @@ def execute_code(
                     "calls": finished,
                     "stats": {
                         "tool_calls": calls,
+                        "rounds": len(rounds),
                         "upstream_bytes": total,
                         "output_bytes": output_bytes,
                         "elapsed_ms": round((time.monotonic() - start) * 1000),

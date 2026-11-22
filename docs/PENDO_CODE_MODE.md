@@ -103,17 +103,50 @@ pendo-code run --mock examples/pendo_code_mode/account_brief.js
 `--mock` starts a bundled stand-in server. It models ten tools with the real argument
 schemas and result shapes, condensed descriptions and synthetic data.
 
-Measured on the mock, which understates the real gap because its tables are small:
+## Read performance: regular MCP against Code Mode
 
-| Recipe | Model tool calls: direct → Code Mode | Result bytes into the conversation |
-| --- | --- | --- |
-| `feature_adoption_by_account.js` | 6 → 1 | 3,863 → 1,526 |
-| `usage_movers.js` | 6 → 1 | 13,421 → 1,259 |
-| `guide_audit.js` | 2 → 1 | 4,370 → 2,448 |
-| `account_brief.js` | 10 → 1 | 4,387 → 875 |
+```bash
+pendo-code bench --mock examples/pendo_code_mode/*.js
+pendo-code bench --mock --simulate-latency-ms 300 examples/pendo_code_mode/*.js
+# against the real server (read-only; --allow-writes and --allow-tool are refused)
+pendo-code bench --default subId=<subscription id> --runs 5 your_program.js
+```
 
-Each program is itself 1.3 to 2.0 KB that the model has to write. Tool definitions for
-the ten mock tools are 18.8 KB raw against 2.7 KB for `search` plus `execute`.
+For each program the benchmark runs Code Mode for real and records its upstream
+calls. It then makes the same calls directly, one result per tool call, which is
+what a model using the server without Code Mode has to do. It reports tool calls,
+model turns, bytes entering the conversation, and time spent waiting on the server.
+Code Mode is charged for a `search` call and for the program the model writes.
+
+On the mock (9 read tools, small tables), with 300 ms of simulated latency per call:
+
+| Program | Tool calls | Model turns | Conversation bytes | Waiting on Pendo (ms) |
+| --- | --- | --- | --- | --- |
+| account_brief | 10 → 2 | 11 (or 4 with parallel calls) → 3 | 6,274 → 11,199 | 3011 (or 904) → 931 |
+| feature_adoption_by_account | 6 → 2 | 7 (or 3 with parallel calls) → 3 | 5,087 → 6,672 | 1806 (or 603) → 629 |
+| guide_audit | 2 → 2 | 3 (or 2 with parallel calls) → 3 | 4,660 → 7,916 | 602 (or 301) → 326 |
+| usage_movers | 6 → 2 | 7 (or 2 with parallel calls) → 3 | 14,996 → 5,244 | 1813 (or 303) → 331 |
+
+Tool definitions, paid once per conversation: 18,274 bytes for regular MCP against
+2,686 for Code Mode.
+
+Reading these numbers:
+
+- Tool calls and model turns drop whenever a question fans out.
+- Per-question conversation bytes are **worse** for Code Mode in three of the four
+  programs here. The signatures returned by `search` cost 4 to 8 KB, and the mock's
+  result tables are too small to repay that. Code Mode wins on this measure only
+  when results are large (`usage_movers`) or when signatures are already in context
+  from an earlier question.
+- The fixed definition cost is the clearer saving, and it grows with the number of
+  tools: the mock has 9, the real server about 130.
+- Waiting time matches a client that issues parallel tool calls and beats one that
+  calls sequentially. Code Mode adds about 25 ms to start Node.
+- No model is in the loop. Regular MCP is handed exactly the right calls, and model
+  thinking time, which grows with turns, is not measured. Token counts in the output
+  are bytes divided by four.
+
+These are mock numbers. The benchmark has not been run against the live server.
 
 ## Connect to the real Pendo MCP server
 
