@@ -136,6 +136,15 @@ def _base_url() -> str:
     return base
 
 
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Do not follow redirects with the subscription-wide integration key."""
+
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str,
+                         headers: Any, newurl: str) -> None:
+        return None
+
+
 class PendoCatalog:
     """Search a limited catalog of non-personal Pendo definitions.
 
@@ -175,7 +184,7 @@ class PendoCatalog:
                 headers={"Accept": "application/json", "x-pendo-integration-key": key},
             )
             try:
-                with urllib.request.urlopen(request, timeout=max(0.1, min(timeout_seconds, 12.0))) as response:
+                with urllib.request.build_opener(NoRedirect()).open(request, timeout=max(0.1, min(timeout_seconds, 12.0))) as response:
                     raw = response.read(self.max_response_bytes + 1)
                 if len(raw) > self.max_response_bytes:
                     raise DiscoveryError("Catalog too large; use a specific appId or a higher server cap.")
