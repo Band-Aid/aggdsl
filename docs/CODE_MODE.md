@@ -1,12 +1,44 @@
 # Pendo Code Mode: discovery-first analytical programming
 
-This branch adds an experimental **single MCP tool**, `execute_pendo_code(code)`.
-An AI writes arbitrary JavaScript analysis logic. The JavaScript can discover
+This branch exposes **exactly two MCP tools**: `read_aggdsl_reference(topic)`
+for knowledge retrieval *before* writing a query and `execute_pendo_code(code)`
+for read-only analysis. An AI writes arbitrary JavaScript analysis logic. The JavaScript can discover
 real Pendo entity IDs, compile-check novel aggDSL queries, issue several
 read-only aggregation requests, and return a *small* final result.
 
 **It is not restricted to the included examples.** The examples demonstrate
 the programming model, not a fixed query registry.
+
+## MCP boundary: 2 tools, no metric semantics
+
+The server intentionally does **not** provide one tool per Pendo operation.
+The agent sees two top-level functions:
+
+1. `read_aggdsl_reference(topic)`: fetch only the relevant grammar or a
+   single syntax pattern before generating an aggDSL query. Topics are
+   `workflow`, `syntax`, `sources`, `grammar`, `patterns`,
+   `pattern:<name>`, `examples`, and `troubleshooting`.
+2. `execute_pendo_code(code)`: one JavaScript program that can discover
+   Pendo catalog entries, validate generated aggDSL, issue multiple read-only
+   aggregation requests and post-process results.
+
+For clients supporting MCP Resources, the same reference is available at
+`aggdsl://reference/workflow`, `aggdsl://reference/grammar`,
+`aggdsl://reference/patterns`, and `aggdsl://patterns/{name}`. These
+are *not additional tools*. Resource injection into the model is
+client-dependent, so the reference tool is a reliable fallback.
+
+**No Semantic Layer.** This project does not define DAU, MAU, adoption,
+engagement, conversion, ROI, KPI ownership or their formulas. Those meanings
+vary by customer, app and analysis. The user or agent determines what should
+be measured; this server only makes Pendo's analytical query language,
+discoverable schema and execution mechanics accessible.
+
+Typical flow: **read grammar → discover relevant entities → write arbitrary
+aggDSL → compile-check → run → return just the requested calculation**.
+If the agent is already familiar with valid syntax it can go straight to
+`execute_pendo_code`. Complex DSL constructs remain available; examples
+are *teaching material*, not a whitelist.
 
 ## Supported JavaScript API
 
@@ -48,7 +80,8 @@ aggdsl-code-mcp
 ```
 
 Configure the command `aggdsl-code-mcp` as an MCP stdio server in the agent
-client. It exposes one read-only tool rather than dozens of separate tools.
+client. It exposes **two** read-only tools rather than dozens of specialized
+Pendo tools.
 Other Pendo actions such as guide edits are intentionally unavailable.
 
 **Important:** Pendo Integration Keys grant access to *every app in their
@@ -99,7 +132,8 @@ injected mock catalog and backend to run fully offline.
 ## Execution mechanics
 
 ```text
-AI writes JavaScript (one MCP request)
+AI reads only necessary grammar/pattern (optional tool call)
+  -> AI writes JavaScript (one execution tool call)
   -> Node.js worker (no credentials)
   -> JSON-lines bridge
      -> help / validate: local read-only reference and aggDSL compiler
