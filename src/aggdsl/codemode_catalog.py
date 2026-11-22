@@ -291,6 +291,92 @@ class PendoCatalog:
             "truncated": len(matched) > limit,
         }
 
+
+    def metadata(
+        self, *, kind: str = "visitor", query: str = "",
+        limit: int = 40, timeout_seconds: float = 10.0,
+    ) -> dict[str, Any]:
+        """Discover configured metadata field *definitions*, not visitor values.
+
+        Pendo documents GET /api/v1/metadata/schema/{kind}. A bounded recursive
+        walk handles either grouped object or list responses without pretending
+        that arbitrary field names have been verified in aggregation sources.
+        """
+        if kind not in ("visitor", "account"):
+            raise DiscoveryError("Metadata kind must be 'visitor' or 'account'.")
+        if not isinstance(query, str) or len(query) > 120:
+            raise DiscoveryError("Metadata query must be at most 120 characters.")
+        if type(limit) is not int or not 1 <= limit <= 60:
+            raise DiscoveryError("Metadata limit must be 1-60.")
+        url = _base_url() + "/api/v1/metadata/schema/" + kind
+        if self.transport is not None:
+            schema = self.transport(url, min(timeout_seconds, 12.0), self.max_response_bytes)
+        else:
+            key = os.environ.get("PENDO_INTEGRATION_KEY") or os.environ.get("PENDO_API_KEY")
+            if not key:
+                raise DiscoveryError("Set PENDO_INTEGRATION_KEY on the Python host for metadata discovery.")
+            req = urllib.request.Request(
+                url, method="GET",
+                headers={"Accept": "application/json", "x-pendo-integration-key": key},
+            )
+            try:
+                with urllib.request.build_opener(NoRedirect()).open(
+                    req, timeout=max(0.1, min(timeout_seconds, 12.0)),
+                ) as response:
+                    raw = response.read(self.max_response_bytes + 1)
+                if len(raw) > self.max_response_bytes:
+                    raise DiscoveryError("Metadata schema exceeds configured response limit.")
+                schema = json.loads(raw)
+            except urllib.error.HTTPError as exc:
+                raise DiscoveryError(f"Pendo metadata schema HTTP {exc.code}.") from exc
+            except urllib.error.URLError as exc:
+                raise DiscoveryError("Pendo metadata schema connection failed.") from exc
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise DiscoveryError("Pendo metadata schema returned invalid JSON.") from exc
+
+        results: list[dict[str, Any]] = []
+        scanned = 0
+        def walk(value: Any, path: tuple[str, ...], depth: int) -> None:
+            nonlocal scanned
+            if depth > 7 or scanned > 20_000:
+                return
+            scanned += 1
+            if isinstance(value, dict):
+                type_name = value.get("type", value.get("dataType"))
+                if isinstance(type_name, str) and type_name.lower() not in ("object", "array"):
+                    name = value.get("name", path[-1] if path else None)
+                    if isinstance(name, str):
+                        field = {
+                            "name": name[:160],
+                            "group": str(value.get("group", path[-2] if len(path) >= 2 else ""))[:160],
+                            "type": type_name[:80],
+                        }
+                        if "displayName" in value and isinstance(value["displayName"], str):
+                            field["displayName"] = value["displayName"][:160]
+                        results.append(field)
+                        return
+                for k, v in value.items():
+                    if k not in ("value", "values", "example", "examples"):
+                        walk(v, path + (str(k),), depth + 1)
+            elif isinstance(value, list):
+                for entry in value[:5_000]:
+                    walk(entry, path, depth + 1)
+
+        walk(schema, (), 0)
+        needle = query.casefold().strip()
+        matches = [
+            field for field in results
+            if not needle or needle in field["name"].casefold()
+            or needle in field["group"].casefold()
+            or needle in field.get("displayName", "").casefold()
+        ]
+        return {
+            "kind": kind, "fields": matches[:limit],
+            "totalMatches": len(matches), "truncated": len(matches) > limit,
+            "parsed": bool(results),
+            "note": "Field definitions only; aggregation-time field availability is not guaranteed."
+        }
+
     def apps(self, *, timeout_seconds: float = 10.0) -> dict[str, Any]:
         """Derive App IDs from tagged resources; does not promise an exhaustive app list."""
         counts: dict[str, dict[str, int]] = {}
