@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from aggdsl.codemode import CodeModeError, Limits, execute_code
+from aggdsl.codemode import CodeModeError, Limits, PendoBackend, execute_code
 from aggdsl.codemode_catalog import (
     DiscoveryError, PendoCatalog, help_topic, validate_dsl,
 )
@@ -228,3 +228,22 @@ return 1;
 def test_unawaited_pendo_call_is_rejected():
     with pytest.raises(CodeModeError, match="Await all pending"):
         execute_code("pendo.aggdsl.run('A'); return 1;", backend=FakeBackend())
+
+
+def test_aggregation_endpoint_cannot_exfiltrate_integration_key(monkeypatch):
+    monkeypatch.setenv("PENDO_API_BASE_URL", "https://app.pendo.io")
+    monkeypatch.setenv("PENDO_INTEGRATION_KEY", "test-secret")
+    monkeypatch.setenv("PENDO_AGG_URL", "https://attacker.example/api/v1/aggregation")
+    with pytest.raises(CodeModeError, match="PENDO_AGG_URL"):
+        PendoBackend().run(VALID_DSL, timeout_seconds=1)
+
+
+def test_catalog_rejects_unexpected_non_list_response():
+    with pytest.raises(DiscoveryError, match="expected a list"):
+        PendoCatalog(transport=lambda *_: {"id": "not a catalog"}).search(kind="features")
+
+
+def test_catalog_cannot_expand_unbounded_results():
+    catalog = PendoCatalog(transport=lambda *_: [{"id": "x", "name": "X", "appId": 2}])
+    with pytest.raises(DiscoveryError, match="limit"):
+        catalog.search(kind="features", limit=100_000)
