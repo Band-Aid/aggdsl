@@ -21,9 +21,11 @@ dev = [
 
 [project.scripts]
 aggdsl = "aggdsl.cli:main"
+pendo-code = "pendo_codemode.server:cli_main"
+pendo-code-mcp = "pendo_codemode.server:serve_main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/aggdsl"]
+packages = ["src/aggdsl", "src/pendo_codemode"]

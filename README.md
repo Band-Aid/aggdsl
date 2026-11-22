@@ -165,3 +165,16 @@ Notes:
 
 - Unsupported/unknown stages are emitted as `| raw { ... }` so the output stays semantically equivalent.
 - JSON output uses UTF-8 and does not escape Unicode keys (no `\uXXXX` sequences).
+
+## Pendo MCP in Code Mode (concept)
+
+`src/pendo_codemode/` is a separate, dependency-free package that puts the Pendo MCP
+server behind two tools, `search` and `execute`. The model writes one JavaScript
+program that calls Pendo tools as `await pendo.<tool>(args)` and returns only the
+answer. It does not use aggDSL.
+
+```bash
+pendo-code run --mock examples/pendo_code_mode/top_features_by_account.js
+```
+
+See [docs/PENDO_CODE_MODE.md](docs/PENDO_CODE_MODE.md) for setup, limits and safety notes.
