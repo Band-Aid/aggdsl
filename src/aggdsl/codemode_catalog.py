@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import re
 import time
 import urllib.error
@@ -81,8 +82,37 @@ _GUIDE_NAMES = {
 
 
 def help_topic(topic: str = "workflow") -> dict[str, str]:
-    if not isinstance(topic, str) or topic not in _GUIDE_NAMES:
-        raise DiscoveryError("Unknown help topic; choose " + ", ".join(_GUIDE_NAMES))
+    """Load only the requested slice of the repo's DSL knowledge.
+
+    Grammar and patterns are shipped with the installed wheel so the agent
+    need not fetch unrelated docs or rely on pre-trained syntax guesses.
+    """
+    if not isinstance(topic, str):
+        raise DiscoveryError("Help topic must be a string")
+    root = Path(__file__).resolve().parent
+    if topic == "grammar":
+        file = root / "codemode_grammar.md"
+        if not file.is_file():
+            raise DiscoveryError("Grammar reference not bundled in this installation.")
+        return {"topic": topic, "text": file.read_text(encoding="utf-8")[:10_000]}
+    patterns_dir = root / "codemode_patterns"
+    if topic == "patterns":
+        names = sorted(p.stem for p in patterns_dir.glob("*.dsl")) if patterns_dir.is_dir() else []
+        return {"topic": topic, "text": "Available patterns: " + ", ".join(names)}
+    if topic.startswith("pattern:"):
+        name = topic.removeprefix("pattern:")
+        if not re.fullmatch(r"[a-z][a-z0-9-]{1,60}", name):
+            raise DiscoveryError("Invalid pattern name")
+        file = patterns_dir / (name + ".dsl")
+        if not file.is_file():
+            raise DiscoveryError("Unknown pattern. Call pendo.help('patterns') first.")
+        return {"topic": topic, "text": file.read_text(encoding="utf-8")[:10_000]}
+    if topic not in _GUIDE_NAMES:
+        raise DiscoveryError(
+            "Unknown help topic; choose "
+            + ", ".join(_GUIDE_NAMES)
+            + ", grammar, patterns or pattern:<name>"
+        )
     return {"topic": topic, "text": _GUIDE_NAMES[topic]}
 
 
