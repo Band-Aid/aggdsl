@@ -181,7 +181,7 @@ aggdsl-code-mcp
 To test locally without Pendo credentials:
 
 ```bash
-aggdsl-code --dry-run compare.js
+aggdsl-code --dry-run examples/code_mode_compare.js
 ```
 
 See [Code Mode setup, example and safety notes](docs/CODE_MODE.md). This is a
