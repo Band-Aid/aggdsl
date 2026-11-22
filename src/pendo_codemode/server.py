@@ -204,6 +204,8 @@ def cli_main(argv: list[str] | None = None) -> int:
     bench.add_argument("files", nargs="+", help="JavaScript programs to measure")
     bench.add_argument("--runs", type=int, default=3, help="Repetitions; the median is reported")
     bench.add_argument("--simulate-latency-ms", type=float, default=0, help="Extra delay per upstream call")
+    bench.add_argument("--tokens", action="store_true", help="Exact token counts from the Anthropic API")
+    bench.add_argument("--token-model", default="claude-opus-5-5", help="Model whose tokenizer is used with --tokens")
     bench.add_argument("--json", action="store_true", help="Print raw measurements instead of a table")
     for command in (run, tools, bench):
         _add_upstream_flags(command)
@@ -229,6 +231,7 @@ def cli_main(argv: list[str] | None = None) -> int:
             backend: Any = McpBackend(client)
             if args.simulate_latency_ms:
                 backend = benchmark.DelayedBackend(backend, args.simulate_latency_ms)
+            counter = benchmark.AnthropicCounter(args.token_model) if args.tokens else None
             rows = [
                 benchmark.measure(
                     Path(name),
@@ -238,6 +241,7 @@ def cli_main(argv: list[str] | None = None) -> int:
                     codemode_tools=tool_definitions(catalog, limits),
                     limits=limits,
                     runs=max(1, args.runs),
+                    counter=counter,
                 )
                 for name in args.files
             ]

@@ -434,3 +434,34 @@ def test_benchmark_refuses_a_catalog_with_write_tools():
     with pytest.raises(ValueError, match="read-only"):
         bench.measure(Path("x.js"), catalog=mock_catalog(allow_writes=True), backend=MockBackend(),
                       raw_tools=[], codemode_tools=[], limits=Limits())
+
+
+@needs_node
+def test_benchmark_reports_tokens_from_the_supplied_counter():
+    from pendo_codemode import bench
+    from pendo_codemode.server import tool_definitions
+
+    class WordCounter:
+        exact, label = True, "counted by a test double"
+
+        def text(self, text):
+            return len(text.split())
+
+        def tools(self, tools):
+            return 1000 * len(tools)
+
+    catalog = mock_catalog()
+    kwargs = dict(catalog=catalog, backend=MockBackend(), raw_tools=mock_pendo.list_tools()[:9],
+                  codemode_tools=tool_definitions(catalog, Limits()), limits=Limits(), runs=1)
+    path = Path("examples/pendo_code_mode/usage_movers.js")
+    row = bench.measure(path, counter=WordCounter(), **kwargs)
+    regular, code = row["regular_mcp"], row["code_mode"]
+    assert (regular["definition_tokens"], code["definition_tokens"]) == (9000, 2000)
+    assert code["program_tokens"] == len(path.read_text(encoding="utf-8").split())
+    assert code["conversation_tokens"] == code["search_result_tokens"] + code["program_tokens"] + code["result_tokens"]
+    assert regular["conversation_tokens"] == regular["argument_tokens"] + regular["result_tokens"] > 0
+    table = bench.render([row], upstream="mock", tool_count=9, runs=1, delay_ms=0)
+    assert "Tokens: counted by a test double." in table and "~" not in table
+    # Without a counter the figures are marked as estimates.
+    estimate = bench.render([bench.measure(path, **kwargs)], upstream="mock", tool_count=9, runs=1, delay_ms=0)
+    assert "Tokens: estimated as bytes / 4." in estimate and "- regular MCP: ~" in estimate

@@ -118,23 +118,37 @@ what a model using the server without Code Mode has to do. It reports tool calls
 model turns, bytes entering the conversation, and time spent waiting on the server.
 Code Mode is charged for a `search` call and for the program the model writes.
 
-On the mock (9 read tools, small tables), with 300 ms of simulated latency per call:
+Token counts are exact with `--tokens`, which calls Anthropic's `count_tokens`
+endpoint (`pip install -e '.[tokens]'` and API credentials such as
+`ANTHROPIC_API_KEY`; `--token-model` picks the tokenizer, default `claude-opus-5-5`).
+Without it they are bytes / 4, marked `~`, which tends to undercount JSON.
 
-| Program | Tool calls | Model turns | Conversation bytes | Waiting on Pendo (ms) |
+On the mock (9 read tools, small tables), tokens **estimated**:
+
+| Program | Tool calls | Model turns | Conversation tokens | With definitions |
 | --- | --- | --- | --- | --- |
-| account_brief | 10 → 2 | 11 (or 4 with parallel calls) → 3 | 6,274 → 11,199 | 3011 (or 904) → 931 |
-| feature_adoption_by_account | 6 → 2 | 7 (or 3 with parallel calls) → 3 | 5,087 → 6,672 | 1806 (or 603) → 629 |
-| guide_audit | 2 → 2 | 3 (or 2 with parallel calls) → 3 | 4,660 → 7,916 | 602 (or 301) → 326 |
-| usage_movers | 6 → 2 | 7 (or 2 with parallel calls) → 3 | 14,996 → 5,244 | 1813 (or 303) → 331 |
+| account_brief | 10 → 2 | 11 (or 4 parallel) → 3 | ~1,573 → ~2,800 | ~6,141 → ~3,472 |
+| feature_adoption_by_account | 6 → 2 | 7 (or 3 parallel) → 3 | ~1,274 → ~1,669 | ~5,842 → ~2,341 |
+| guide_audit | 2 → 2 | 3 (or 2 parallel) → 3 | ~1,166 → ~1,979 | ~5,734 → ~2,651 |
+| usage_movers | 6 → 2 | 7 (or 2 parallel) → 3 | ~3,751 → ~1,311 | ~8,319 → ~1,983 |
 
-Tool definitions, paid once per conversation: 18,274 bytes for regular MCP against
-2,686 for Code Mode.
+Tool definitions, paid in every conversation: ~4,568 tokens for regular MCP against
+~672 for Code Mode. "With definitions" is a conversation that asks one question.
+
+With 300 ms of simulated latency per call, time waiting on the server:
+
+| Program | Regular MCP, sequential | Regular MCP, parallel calls | Code Mode |
+| --- | --- | --- | --- |
+| account_brief | 3011 ms | 904 ms | 931 ms |
+| feature_adoption_by_account | 1806 ms | 603 ms | 629 ms |
+| guide_audit | 602 ms | 301 ms | 326 ms |
+| usage_movers | 1813 ms | 303 ms | 331 ms |
 
 Reading these numbers:
 
 - Tool calls and model turns drop whenever a question fans out.
-- Per-question conversation bytes are **worse** for Code Mode in three of the four
-  programs here. The signatures returned by `search` cost 4 to 8 KB, and the mock's
+- Per-question conversation tokens are **worse** for Code Mode in three of the four
+  programs here. The signatures returned by `search` cost roughly 600 to 2,100 tokens, and the mock's
   result tables are too small to repay that. Code Mode wins on this measure only
   when results are large (`usage_movers`) or when signatures are already in context
   from an earlier question.
@@ -143,8 +157,10 @@ Reading these numbers:
 - Waiting time matches a client that issues parallel tool calls and beats one that
   calls sequentially. Code Mode adds about 25 ms to start Node.
 - No model is in the loop. Regular MCP is handed exactly the right calls, and model
-  thinking time, which grows with turns, is not measured. Token counts in the output
-  are bytes divided by four.
+  thinking time, which grows with turns, is not measured.
+- Each token is counted once. A real conversation re-reads earlier turns on every
+  model turn, which costs regular MCP more because it takes more turns; prompt
+  caching reduces that for both.
 
 These are mock numbers. The benchmark has not been run against the live server.
 
