@@ -6,11 +6,13 @@ on:
       - 'src/aggdsl/codemode*'
       - 'tests/test_codemode*.py'
       - 'pyproject.toml'
+      - 'README.md'
+      - 'docs/CODE_MODE.md'
       - '.github/workflows/code-mode-tests.yml'
   pull_request:
     paths:
       - 'src/aggdsl/codemode*'
-      - 'tests/test_codemode.py'
+      - 'tests/test_codemode*.py'
       - 'pyproject.toml'
       - '.github/workflows/code-mode-tests.yml'
 
