@@ -169,7 +169,7 @@ Notes:
 ## Code Mode PoC
 
 Run dynamically generated, read-only Pendo analyses in **one** JavaScript tool call.
-Code Mode can discover real Page/Feature/Track Event/Guide IDs, load the full
+Code Mode can discover real Page/Feature/Track Event/Guide IDs and declared metadata fields, load the full
 aggDSL grammar or patterns on demand, validate syntax, and run independent
 aggregations concurrently using the existing aggDSL compiler. This exposes an optional read-only MCP tool called
 `execute_pendo_code` (Node.js >=22.13 required).
