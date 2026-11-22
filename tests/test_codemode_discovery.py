@@ -53,6 +53,11 @@ TIMESERIES period=dayRange first=now() count=7
 def test_help_topics_are_small_and_specific():
     assert "catalog.search" in help_topic("workflow")["text"]
     assert "TIMESERIES" in help_topic("syntax")["text"]
+    assert "Event sources" in help_topic("grammar")["text"]
+    assert "top-features" in help_topic("patterns")["text"]
+    assert "featureEvents" in help_topic("pattern:top-features")["text"]
+    with pytest.raises(DiscoveryError, match="Invalid pattern name"):
+        help_topic("pattern:../secrets")
     with pytest.raises(DiscoveryError, match="Unknown help topic"):
         help_topic("imaginary")
 
