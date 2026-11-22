@@ -21,6 +21,7 @@ def main() -> None:
         - await pendo.catalog.search({type:'pages'|'features'|'trackTypes'|'guides',
                                       query:'checkout', appId?:'123', limit?:20})
         - await pendo.catalog.apps() // observed App IDs only, NOT all apps
+        - await pendo.catalog.metadata({kind:'visitor'|'account',query?:'plan'})
         - await pendo.aggdsl.validate(dslString) // compile-only diagnostics
         - await pendo.aggdsl.run(dslString) // live Aggregation API result
 
