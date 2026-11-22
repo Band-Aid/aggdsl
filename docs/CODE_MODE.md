@@ -15,6 +15,7 @@ the programming model, not a fixed query registry.
 | `pendo.help(topic)` | On-demand documentation ("workflow", "syntax", "sources", "examples", "troubleshooting", "grammar", "patterns", "pattern:<name>") | None |
 | `pendo.catalog.search({type,query?,appId?,limit?})` | ID, name and app ID for matching Pendo definitions | GET only |
 | `pendo.catalog.apps()` | App IDs **observed on tagged entities**, never a complete app list | GET only |
+| `pendo.catalog.metadata({kind:'visitor'|'account',query?,limit?})` | Configured visitor/account metadata field names and types | GET only |
 | `pendo.aggdsl.validate(dsl, {includeBody?:true})` | Syntax/structure checks, warnings and optionally compiled JSON | None |
 | `pendo.aggdsl.run(dsl)` | The actual Pendo Aggregation API JSON response | POST aggregation, read only |
 
