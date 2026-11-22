@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import re
 import time
@@ -380,8 +381,14 @@ class PendoCatalog:
     def apps(self, *, timeout_seconds: float = 10.0) -> dict[str, Any]:
         """Derive App IDs from tagged resources; does not promise an exhaustive app list."""
         counts: dict[str, dict[str, int]] = {}
-        for kind in ("pages", "features", "trackTypes"):
-            rows = self._fetch(kind, None, timeout_seconds)
+        kinds = ("pages", "features", "trackTypes")
+        # Each endpoint can be slow for large subscriptions. Do not serialize
+        # three independent catalog reads under the overall Code Mode timeout.
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            datasets = list(pool.map(
+                lambda kind: self._fetch(kind, None, timeout_seconds), kinds
+            ))
+        for kind, rows in zip(kinds, datasets):
             for row in rows:
                 if row.get("appId") is None:
                     continue
