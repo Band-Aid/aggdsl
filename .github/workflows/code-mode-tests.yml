@@ -27,5 +27,19 @@ jobs:
           node-version: '22'
       - name: Install package
         run: pip install -e '.[dev,codemode]'
-      - name: Test Code Mode
-        run: pytest -q tests/test_codemode.py tests/test_codemode_discovery.py
+      - name: Test entire aggDSL project
+        run: pytest -q
+      - name: Build wheel and check on-demand documentation assets
+        run: |
+          pip wheel --no-deps -w /tmp/aggdsl-wheels .
+          python - <<'PY'
+          import glob, zipfile
+          paths = glob.glob('/tmp/aggdsl-wheels/aggdsl-*.whl')
+          assert paths, 'wheel was not built'
+          with zipfile.ZipFile(paths[0]) as wheel:
+              names = set(wheel.namelist())
+              assert 'aggdsl/codemode_worker.cjs' in names
+              assert 'aggdsl/codemode_grammar.md' in names
+              assert 'aggdsl/codemode_patterns/top-features.dsl' in names
+          print('Code Mode wheel includes worker, grammar, and patterns')
+          PY
