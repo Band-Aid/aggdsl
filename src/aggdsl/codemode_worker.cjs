@@ -68,7 +68,11 @@ async function execute(code) {
     });
     if (!finished) {
       finished = true;
-      send({ type: 'done', value: result === undefined ? null : result });
+      if (pending.size > 0) {
+        send({ type: 'error', message: 'Await all pending Pendo promises before returning' });
+      } else {
+        send({ type: 'done', value: result === undefined ? null : result });
+      }
     }
   } catch (error) {
     if (!finished) {
