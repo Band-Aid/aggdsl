@@ -165,3 +165,24 @@ Notes:
 
 - Unsupported/unknown stages are emitted as `| raw { ... }` so the output stays semantically equivalent.
 - JSON output uses UTF-8 and does not escape Unicode keys (no `\uXXXX` sequences).
+
+## Code Mode PoC
+
+Run multiple Pendo aggregations inside **one** JavaScript tool call, using the
+existing aggDSL compiler. This exposes an optional read-only MCP tool called
+`execute_pendo_code` (Node.js >=22.13 required).
+
+```bash
+pip install -e '.[codemode]'
+export PENDO_INTEGRATION_KEY='...'
+aggdsl-code-mcp
+```
+
+To test locally without Pendo credentials:
+
+```bash
+aggdsl-code --dry-run compare.js
+```
+
+See [Code Mode setup, example and safety notes](docs/CODE_MODE.md). This is a
+trusted-local proof of concept, not a production multi-tenant JS sandbox.
