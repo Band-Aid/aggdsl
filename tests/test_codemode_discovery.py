@@ -164,12 +164,12 @@ def test_ai_can_discover_validate_and_execute_unknown_query_in_one_call():
 const discovered = await pendo.catalog.search({type:'features',query:'checkout',limit:5});
 const id = discovered.items[0].id;
 const appId = Number(discovered.items[0].appId);
-const dsl = \`
-FROM event([source=featureEvents, appId=\${appId}, featureId="\${id}", blacklist="apply"])
-TIMESERIES period=dayRange first=now() count=-7
-| group by featureId fields { clicks=sum(numEvents) }
-| limit 5
-\`;
+const dsl = [
+  'FROM event([source=featureEvents, appId=' + appId + ', featureId="' + id + '", blacklist="apply"])',
+  'TIMESERIES period=dayRange first=now() count=-7',
+  '| group by featureId fields { clicks=sum(numEvents) }',
+  '| limit 5'
+].join('\n');
 const checked = await pendo.aggdsl.validate(dsl);
 if (!checked.valid) throw new Error(JSON.stringify(checked));
 const data = await pendo.aggdsl.run(dsl);
