@@ -90,12 +90,17 @@ def help_topic(topic: str = "workflow") -> dict[str, str]:
     if not isinstance(topic, str):
         raise DiscoveryError("Help topic must be a string")
     root = Path(__file__).resolve().parent
+    source_skills = root.parents[1] / "skills" / "aggdsl"
     if topic == "grammar":
         file = root / "codemode_grammar.md"
+        if not file.is_file():
+            file = source_skills / "references" / "grammar.md"
         if not file.is_file():
             raise DiscoveryError("Grammar reference not bundled in this installation.")
         return {"topic": topic, "text": file.read_text(encoding="utf-8")[:10_000]}
     patterns_dir = root / "codemode_patterns"
+    if not patterns_dir.is_dir():
+        patterns_dir = source_skills / "patterns"
     if topic == "patterns":
         names = sorted(p.stem for p in patterns_dir.glob("*.dsl")) if patterns_dir.is_dir() else []
         return {"topic": topic, "text": "Available patterns: " + ", ".join(names)}
