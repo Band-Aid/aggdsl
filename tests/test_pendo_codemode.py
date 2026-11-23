@@ -116,7 +116,8 @@ def test_search_ranks_name_matches_and_splits_camel_case():
 def test_index_stays_bounded_for_a_server_with_many_tools():
     small = mock_catalog().index()
     assert "- pendo.segmentList({substring?, offset?})  // List or search the subscription's segments." in small
-    assert "- pendo.entityUsage({entityType, entityId, dateRange, groupBy?" in small  # required arguments first
+    # Required arguments first; small enums and maximums are shown because guessing them wastes a run.
+    assert "- pendo.entityUsage({entityType: page|feature|trackEvent, entityId, dateRange, groupBy?: visitor|account, accountId?, limit?≤200," in small
     read = {"readOnlyHint": True}
     props = {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}
     tools = [Tool.from_mcp({"name": f"{verb}Thing{i}", "description": "x" * 5000, "annotations": read, "inputSchema": props})
@@ -408,7 +409,7 @@ def test_server_exposes_two_tools_over_a_real_mcp_chain():
     try:
         tools = {tool["name"]: tool for tool in client.list_tools()}
         assert sorted(tools) == ["execute", "search"]
-        assert "- pendo.entityUsage({entityType, entityId, dateRange, groupBy?" in tools["execute"]["description"]
+        assert "- pendo.entityUsage({entityType: page|feature|trackEvent, entityId, dateRange" in tools["execute"]["description"]
         assert "Pre-set arguments you may omit: subId." in tools["execute"]["description"]
         assert "createSegment" not in tools["execute"]["description"]
         assert tools["execute"]["annotations"] == {"readOnlyHint": True}

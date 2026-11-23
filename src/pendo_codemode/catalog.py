@@ -348,7 +348,18 @@ class Catalog:
         required = set(tool.input_schema.get("required") or []) - set(self.defaults)
         names = [k for k in tool.properties if k != INTENT_PARAM and k not in self.defaults]
         names.sort(key=lambda k: k not in required)
-        args = ", ".join(k if k in required else f"{k}?" for k in names)
+        def hint(key: str) -> str:
+            # Limits and small enums cause most first-try failures, so they earn a place on the line.
+            schema = tool.properties[key] if isinstance(tool.properties[key], dict) else {}
+            label = key if key in required else f"{key}?"
+            values = schema.get("enum")
+            if isinstance(values, list) and 0 < len(values) <= 5:
+                return f"{label}: {'|'.join(map(str, values))}"
+            if isinstance(schema.get("maximum"), (int, float)):
+                return f"{label}≤{schema['maximum']:g}"
+            return label
+
+        args = ", ".join(hint(k) for k in names)
         returns = render_tree(self.trees[tool.name], types=False) if tool.name in self.trees else ""
         tail = f" → {_squash(returns, 520)}" if returns else f"  // {_squash(tool.summary, 110)}"
         return f"{tool.accessor}({{{args}}}){tail}"

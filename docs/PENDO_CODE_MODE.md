@@ -97,8 +97,20 @@ tail with 4 KB descriptions, an assumption about future tools):
 | 132 | ~131,000 | ~1,700 |
 | 412 | ~423,000 | ~2,600 |
 
-State, recipes and the bounded listing are covered by tests against the mock. Their
-effect on a model's token use has not been measured yet.
+A third cold-start run with these features, on the same three questions (one run):
+
+| | API in the description | Plus state, recipes, merged shapes |
+| --- | --- | --- |
+| Executes | 5 | 6 |
+| Conversation tokens | ~13,100 | ~13,100 |
+| Pendo queries | 43 | 82 |
+
+Tokens did not drop. The model stored about 64 KB in `state` and reused it, but it
+did roughly twice the analysis, still returned the entity catalogue once in order to
+choose from it, read signatures through `pendo.help` (~3,300 tokens), and lost one
+run to an undocumented maximum (`limit` above 200). Maximums and small enums are now
+shown on each tool's line. A fourth question, pulling guide poll responses, took
+about 1,200 conversation tokens against about 3,400 for regular MCP.
 
 What this repo cannot fix, and Pendo's server can: published output schemas, batch
 forms of the per-entity tools (one program needed 22 `entityUsage` calls), and running
