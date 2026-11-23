@@ -185,6 +185,112 @@ def measure(
             "regular_mcp": regular, "code_mode": codemode}
 
 
+def _call_key(tool: str, args: dict[str, Any]) -> str:
+    # The telemetry argument differs between a person's wording and the program's, so it is ignored.
+    return json.dumps([tool, {k: v for k, v in args.items() if k != "userQuery"}], sort_keys=True)
+
+
+class ReplayBackend:
+    """Serve tool results recorded from an earlier session; no network.
+
+    A recording is a directory of NN.json files, each {"tool", "args", "result"}.
+    A call that was never recorded fails, so a program measured this way can
+    only use data that the recorded regular-MCP session also fetched.
+    """
+
+    def __init__(self, directory: Path) -> None:
+        self.calls: list[dict[str, Any]] = []
+        for path in sorted(directory.glob("[0-9]*.json")):
+            self.calls.append(json.loads(path.read_text(encoding="utf-8")))
+        if not self.calls:
+            raise ValueError(f"no recorded calls (NN.json) in {directory}")
+        self._results = {_call_key(c["tool"], c["args"]): c for c in self.calls}
+
+    def call_tool(self, name: str, arguments: dict[str, Any], *, timeout: float) -> Any:
+        found = self._results.get(_call_key(name, arguments))
+        if found is None:
+            raise RuntimeError(f"not in the recording: {json.dumps(arguments, sort_keys=True)[:300]}")
+        if found.get("error"):
+            raise RuntimeError(str(found["result"])[:500])
+        return found["result"]
+
+
+def measure_recorded(
+    path: Path,
+    recording: Path,
+    *,
+    catalog: Catalog,
+    limits: Limits,
+    counter: TokenCounter | None = None,
+) -> dict[str, Any]:
+    """Compare a recorded regular-MCP session with a program replayed over the same results."""
+    counter = counter or EstimateCounter()
+    replay = ReplayBackend(recording)
+    code = path.read_text(encoding="utf-8")
+    output = execute_code(code, catalog=catalog, backend=replay, limits=limits, intent=f"benchmark {path.stem}")
+    failed = [call for call in output["calls"] if not call["ok"]]
+    used = sorted({call["tool"] for call in output["calls"]})
+    search_text = "\n\n".join(catalog.describe(name, limit=1) for name in used if name in catalog.tools)
+    args_text = "\n".join(json.dumps(c["args"], ensure_ascii=False) for c in replay.calls)
+    results_text = "\n".join(json.dumps(c["result"], ensure_ascii=False) for c in replay.calls)
+    result_text = json.dumps(output["result"], ensure_ascii=False)
+    regular = {
+        "tool_calls": len(replay.calls),
+        "failed_calls": sum(1 for c in replay.calls if c.get("error")),
+        "argument_bytes": len(args_text.encode("utf-8")),
+        "result_bytes": len(results_text.encode("utf-8")),
+        "argument_tokens": counter.text(args_text),
+        "result_tokens": counter.text(results_text),
+    }
+    codemode = {
+        "tool_calls": 2,
+        "upstream_calls": len(output["calls"]),
+        "upstream_failed": len(failed),
+        "rounds": output["stats"]["rounds"],
+        "search_result_bytes": len(search_text.encode("utf-8")),
+        "program_bytes": len(code.encode("utf-8")),
+        "result_bytes": len(result_text.encode("utf-8")),
+        "search_result_tokens": counter.text(search_text),
+        "program_tokens": counter.text(code),
+        "result_tokens": counter.text(result_text),
+    }
+    regular["conversation_tokens"] = regular["argument_tokens"] + regular["result_tokens"]
+    codemode["conversation_tokens"] = (
+        codemode["search_result_tokens"] + codemode["program_tokens"] + codemode["result_tokens"]
+    )
+    return {"program": path.stem, "tools_used": used, "tokens": counter.label, "tokens_exact": counter.exact,
+            "regular_mcp": regular, "code_mode": codemode, "result": output["result"]}
+
+
+def render_recorded(rows: list[dict[str, Any]]) -> str:
+    mark = "" if rows[0]["tokens_exact"] else "~"
+    lines = [
+        f"Recorded regular-MCP sessions against programs replayed over the same results. Tokens: {rows[0]['tokens']}.",
+        "",
+        "| Scenario | Model tool calls | Pendo calls | Result tokens into conversation | Conversation tokens |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for row in rows:
+        r, c = row["regular_mcp"], row["code_mode"]
+        lines.append(
+            f"| {row['program']} | {r['tool_calls']} → {c['tool_calls']} | {r['tool_calls']} → {c['upstream_calls']} "
+            f"| {mark}{r['result_tokens']:,} → {mark}{c['result_tokens']:,} "
+            f"| {mark}{r['conversation_tokens']:,} → {mark}{c['conversation_tokens']:,} |"
+        )
+    lines += [
+        "",
+        "Code Mode conversation tokens (search result + program + result):",
+        *[
+            f"- {row['program']}: {mark}{row['code_mode']['search_result_tokens']:,} + "
+            f"{mark}{row['code_mode']['program_tokens']:,} + {mark}{row['code_mode']['result_tokens']:,}"
+            for row in rows
+        ],
+        "",
+        "Each cell is regular MCP → Code Mode. Tool definitions and timing are not part of a recording.",
+    ]
+    return "\n".join(lines)
+
+
 def render(rows: list[dict[str, Any]], *, upstream: str, tool_count: int, runs: int, delay_ms: float) -> str:
     first = rows[0]
     mark = "" if first["tokens_exact"] else "~"

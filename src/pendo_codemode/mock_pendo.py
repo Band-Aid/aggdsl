@@ -256,6 +256,38 @@ def _guide_effectiveness(args: dict[str, Any]) -> dict[str, Any]:
     return {"meta": meta, "summary": summary, "rows": rows[: int(args.get("limit") or 20)]}
 
 
+def _get_entity(args: dict[str, Any]) -> dict[str, Any]:
+    entity = next((e for e in ENTITIES if e["id"] == args["entityId"] and e["type"] == args["entityType"]), None)
+    if entity is None:
+        raise ValueError(f"no {args['entityType']} with id {args['entityId']}")
+    found = {"id": entity["id"], "type": entity["type"], "name": entity["name"], "appIds": [entity["appId"]]}
+    if entity["type"] == "feature":
+        found["elementPathRules"] = [f"#{entity['name'].lower().replace(' ', '-')}"]
+    if "productArea" in entity:
+        found["productArea"] = entity["productArea"]
+    return found
+
+
+def _query_funnel(args: dict[str, Any]) -> dict[str, Any]:
+    steps = args["steps"]
+    if not 2 <= len(steps) <= 3:
+        raise ValueError("steps must have 2-3 items")
+    visitors, rows = 0, []
+    for index, step in enumerate(steps):
+        entity = next((e for e in ENTITIES if e["id"] == step.get("id") and e["type"] == step.get("kind")), None)
+        if entity is None:
+            raise ValueError(f"step {index + 1}: no {step.get('kind')} with id {step.get('id')}")
+        previous = visitors
+        visitors = 400 + _n("funnel", entity["id"], mod=400) if index == 0 else previous * (20 + _n("keep", steps[index - 1]["id"], entity["id"], mod=60)) // 100
+        rows.append({"index": index + 1, "kind": step["kind"], "id": step["id"], "visitors": visitors,
+                     "conversionFromStart": round(visitors / rows[0]["visitors"], 4) if rows else 1,
+                     "dropOffFromPrevious": round(1 - visitors / previous, 4) if index else 0,
+                     "medianTimeToNextStep": None if index == len(steps) - 1 else {"seconds": 90, "display": "1m 30s"}})
+    summary = {"totalVisitorsEnteringStep1": rows[0]["visitors"], "visitorsCompletingFunnel": visitors,
+               "overallConversion": rows[-1]["conversionFromStart"], "steps": rows}
+    return {"meta": {**_meta(_window(args["dateRange"])), "analyzeBy": args.get("analyzeBy") or "uniqueVisitors"}, "summary": summary}
+
+
 def _segment_list(args: dict[str, Any]) -> dict[str, Any]:
     needle = str(args.get("substring") or "").lower()
     found = [s for s in SEGMENTS if needle in s["name"].lower()]
@@ -417,6 +449,63 @@ TOOLS: list[tuple[dict[str, Any], Any]] = [
                 "direction": _enum("asc", "desc")}}},
            ["subId"]),
      _guide_effectiveness),
+    (_tool("getEntity",
+           "Get the configuration details of one page, feature, track event, or guide by ID. Does not include any "
+           "usage or metrics.\n\n"
+           "RETURNS:\n- id, type, name, description, appIds, createdAt, lastUpdatedAt for every entity type.\n"
+           "- eventPropertyNames: names of event properties attached to pages, features and track events.\n"
+           "- page: rules and excludeRules (the URL rules that define the page).\n"
+           "- feature: elementPathRules (CSS selector rules identifying the tagged element), and the pageId and "
+           "pageName it is scoped to.\n"
+           "- page and feature: productArea (id and name) when assigned to one; omitted when unassigned.",
+           {"subId": _SUB, "entityType": _d(_enum("page", "feature", "trackEvent", "guide"), "The kind of entity to describe."),
+            "entityId": _d(_S, "The exact ID of the entity. Names are not accepted.")},
+           ["subId", "entityType", "entityId"]),
+     lambda args: _get_entity(args)),
+    (_tool("queryFunnel",
+           "Run a funnel and return conversion and timing metrics for an ordered sequence of 2-3 steps. By default "
+           "the unit of analysis is the unique VISITOR: each visitor counts toward step N only if they completed "
+           "every prior step in order. This is a slow-running tool.\n\n"
+           "USE FOR: Ordered funnel questions, drop-off analysis, time-to-completion between steps.\n\n"
+           "RETURNS:\n- meta.dateRange: resolved startDate and endDate for the query window\n"
+           "- summary.totalVisitorsEnteringStep1: visitors who completed step 1\n"
+           "- summary.visitorsCompletingFunnel: visitors who completed all steps\n"
+           "- summary.overallConversion: fraction (0-1) who completed the funnel\n"
+           "- summary.steps: per-step array of index, kind, id, visitors, conversionFromStart, dropOffFromPrevious\n"
+           "- summary.steps[].averageTimeToNextStep / medianTimeToNextStep: duration objects {seconds, display}; "
+           "null on the last step\n"
+           "- summary.averageTimeToCompletion / medianTimeToCompletion: duration objects (null when no completions)",
+           {"subId": _SUB, "dateRange": _DATE_RANGE, "appId": _APP,
+            "steps": {"type": "array", "description": "Ordered list of funnel steps (2-3 items). Each step is an object "
+                      "with 'kind' (one of 'page', 'feature', 'trackEvent', 'guide') and 'id' (the Pendo entity ID).",
+                      "items": {"type": "object"}},
+            "analyzeBy": _d(_enum("uniqueVisitors", "totalAttempts"), "How to count completions; default uniqueVisitors."),
+            "funnelTimeout": _d(_N, "Maximum minutes per attempt; only used when analyzeBy='totalAttempts'."),
+            "includeAnonymous": _d(_B, "Whether to include unidentified visitors. Defaults to true."),
+            "segmentPipeline": _SEGMENT},
+           ["subId", "steps", "dateRange"]),
+     lambda args: _query_funnel(args)),
+    (_tool("sessionReplayList",
+           "Get session replay recordings with filtering by duration, activity percentage, date range, frustration "
+           "types, and track events.\n\n"
+           "RETURNS:\n- Session replay recordings with their URL and metadata including duration, activity "
+           "percentage, frustration events, and app details. Limited to 50 replays returned.\n"
+           "- Timestamp fields (startTime, endTime) are raw Unix epoch milliseconds; each has a *Display sibling.",
+           {"subId": _SUB, "startDate": _d(_S, "Query start date in YYYY-MM-DD format. Inclusive."),
+            "endDate": _d(_S, "Query end date in YYYY-MM-DD format. Inclusive."),
+            "frustrationTypes": {"type": "array", "description": "Filter to sessions matching frustration signal criteria; "
+                                 "entries are combined with AND.",
+                                 "items": {"type": "object", "required": ["frustrationType", "fact"], "properties": {
+                                     "frustrationType": _enum("rageClick", "errorClick", "deadClick", "uTurn", "overGuidance", "detractorNps"),
+                                     "fact": _enum("occurred", "occurredOn", "notOccurred", "notOccurredOn"),
+                                     "eventType": _enum("page", "feature"), "id": _S}}},
+            "minDuration": _d(_N, "Minimum session duration in milliseconds (default 120000)."),
+            "minActivityPercentage": _d(_N, "Minimum activity percentage (default 5)."),
+            "accountId": _d(_S, "Filter results to a specific account."),
+            "visitorId": _d(_S, "Filter results to a specific visitor."),
+            "productArea": _PRODUCT_AREA, "segmentPipeline": _SEGMENT},
+           ["startDate", "endDate", "subId"]),
+     lambda args: []),
     (_tool("segmentList",
            "List or search the subscription's segments.\n\nRETURNS:\n- totalCount, offset, returned, and segments (id, name)",
            {"subId": _SUB, "substring": _d(_S, "Only return segments whose name or id contains this value."),
@@ -442,9 +531,9 @@ def _problems(value: Any, schema: dict[str, Any], path: str) -> list[str]:
         return [f"{path}: must be one of {schema['enum']}"]
     found: list[str] = []
     if kind == "object":
-        properties = schema.get("properties") or {}
+        properties = schema.get("properties")
         found += [f"{path}.{key}: is required" for key in schema.get("required") or [] if key not in value]
-        for key, item in value.items():
+        for key, item in value.items() if properties is not None else ():  # no properties listed = free-form
             found += _problems(item, properties[key], f"{path}.{key}") if key in properties else [f"{path}.{key}: unknown argument"]
     if kind == "array" and "items" in schema:
         for index, item in enumerate(value):

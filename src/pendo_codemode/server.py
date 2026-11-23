@@ -204,6 +204,10 @@ def cli_main(argv: list[str] | None = None) -> int:
     bench.add_argument("files", nargs="+", help="JavaScript programs to measure")
     bench.add_argument("--runs", type=int, default=3, help="Repetitions; the median is reported")
     bench.add_argument("--simulate-latency-ms", type=float, default=0, help="Extra delay per upstream call")
+    bench.add_argument(
+        "--recorded", action="append", default=[], metavar="DIR",
+        help="Replay a recorded regular-MCP session (NN.json files) instead of calling upstream; one per file",
+    )
     bench.add_argument("--tokens", action="store_true", help="Exact token counts from the Anthropic API")
     bench.add_argument("--token-model", default="claude-opus-5-5", help="Model whose tokenizer is used with --tokens")
     bench.add_argument("--json", action="store_true", help="Print raw measurements instead of a table")
@@ -232,6 +236,19 @@ def cli_main(argv: list[str] | None = None) -> int:
             if args.simulate_latency_ms:
                 backend = benchmark.DelayedBackend(backend, args.simulate_latency_ms)
             counter = benchmark.AnthropicCounter(args.token_model) if args.tokens else None
+            if args.recorded:
+                if len(args.recorded) != len(args.files):
+                    raise CodeModeError("give one --recorded directory per program, in the same order")
+                rows = [
+                    benchmark.measure_recorded(Path(name), Path(directory), catalog=catalog, limits=limits, counter=counter)
+                    for name, directory in zip(args.files, args.recorded)
+                ]
+                if args.json:
+                    json.dump(rows, sys.stdout, indent=2, ensure_ascii=False)
+                    sys.stdout.write("\n")
+                else:
+                    print(benchmark.render_recorded(rows))
+                return 0
             rows = [
                 benchmark.measure(
                     Path(name),
