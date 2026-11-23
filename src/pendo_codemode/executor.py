@@ -59,6 +59,10 @@ class McpBackend:
 def preview_value(value: Any, items: int = 5, text: int = 200, depth: int = 0) -> Any:
     """A cut-down copy of a JSON value: the first few items of each list, long strings trimmed."""
     if isinstance(value, list):
+        # A short list of plain values (table columns, one table row, a few ids) is kept whole:
+        # cutting it would make the rows beside it unreadable.
+        if len(value) <= 40 and not any(isinstance(item, (dict, list)) for item in value):
+            return [preview_value(item, items, text, depth + 1) for item in value]
         shown = [preview_value(item, items, text, depth + 1) for item in value[:items]]
         return shown + [f"… {len(value) - items} more not shown"] if len(value) > items else shown
     if isinstance(value, dict):

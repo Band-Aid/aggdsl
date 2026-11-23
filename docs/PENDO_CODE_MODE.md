@@ -113,6 +113,20 @@ run to an undocumented maximum (`limit` above 200). Maximums and small enums are
 shown on each tool's line. A fourth question, pulling guide poll responses, took
 about 1,200 conversation tokens against about 3,400 for regular MCP.
 
+A fourth run added result previews (one run):
+
+| | Without previews | With previews |
+| --- | --- | --- |
+| Questions 1-3, conversation tokens | ~13,100 | ~10,600 |
+| Guide polls, conversation tokens | ~1,200 | ~2,000 |
+| Executes, all four questions | 8 | 9 |
+
+Only one result was actually previewed. The model avoided the cap mostly by returning
+less, and wrapped six results in `full()`, once wastefully for 11 KB of help text. The
+guide-poll question got worse for an unrelated reason: the learned shape for `listGuides`
+showed poll fields that only appear with `expand: true`, and the model's first attempt
+left that argument out. Shapes that depend on the arguments remain a known weakness.
+
 What this repo cannot fix, and Pendo's server can: published output schemas, batch
 forms of the per-entity tools (one program needed 22 `entityUsage` calls), and running
 programs next to the aggregation engine to remove round trips.

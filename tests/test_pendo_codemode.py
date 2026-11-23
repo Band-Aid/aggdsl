@@ -148,7 +148,10 @@ def test_observed_result_shapes_describe_structure_without_data():
     catalog.observe("entityUsage", value)
     catalog.observe("notATool", value)
     assert catalog.shapes == {"entityUsage": shape}
-    assert f" * RESULT SHAPE (observed; ? = not always present): {shape}" in catalog.signature(catalog.tools["entityUsage"])
+    learned = catalog.signature(catalog.tools["entityUsage"])
+    assert f" * RESULT SHAPE (observed; ? = not always present): {shape}" in learned
+    assert "RETURNS:" not in learned and "RETURNS:" in catalog.signature(catalog.tools["entityUsage"], "full")
+    assert "RETURNS:" in catalog.signature(catalog.tools["appUsage"])  # no shape yet, so the prose stays
     assert catalog.compact(catalog.tools["entityUsage"]).endswith("}) → {meta: {hasMore}, rows: [{accountId, events, note, extra?}]}")
 
 
@@ -245,6 +248,16 @@ def test_preview_can_be_overridden_or_switched_off():
     assert small["result"] == {"n": 1} and "preview" not in small and small["state"] == {}
     with pytest.raises(CodeModeError, match="result too large"):  # the hard limit still applies to full()
         run(code % "full(rows)", limits=Limits(preview_bytes=600, max_output_bytes=1000))
+
+
+def test_preview_keeps_table_columns_and_cuts_only_rows():
+    from pendo_codemode.executor import make_preview
+
+    columns = [f"col{i}" for i in range(9)]
+    table = {"columns": columns, "rows": [[f"v{r}-{c}" for c in range(9)] for r in range(60)]}
+    cut = make_preview(table, 4000)
+    assert cut["columns"] == columns
+    assert cut["rows"][0] == [f"v0-{c}" for c in range(9)] and cut["rows"][-1] == "… 55 more not shown"
 
 
 def test_preview_gives_up_detail_in_steps_until_it_fits():

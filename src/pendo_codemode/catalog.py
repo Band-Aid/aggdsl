@@ -312,7 +312,8 @@ class Catalog:
         sections = tool.sections()
         doc = [_squash(sections[""], 6000 if full else 400)] if sections[""] else []
         for heading, body in sections.items():
-            if heading and (full or heading == "RETURNS"):
+            # Once a real result shape is known, the prose RETURNS section is mostly a repeat of it.
+            if heading and (full or (heading == "RETURNS" and tool.name not in self.trees)):
                 doc.append(f"{heading}: {_squash(body, 6000 if full else 900)}")
         if tool.name in self.trees:
             shape = render_tree(self.trees[tool.name])
@@ -357,6 +358,8 @@ class Catalog:
                 return f"{label}: {'|'.join(map(str, values))}"
             if isinstance(schema.get("maximum"), (int, float)):
                 return f"{label}≤{schema['maximum']:g}"
+            if schema.get("type") == "boolean":
+                return f"{label}: bool"
             return label
 
         args = ", ".join(hint(k) for k in names)
