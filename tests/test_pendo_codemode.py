@@ -669,7 +669,7 @@ const funnel = await lib.funnel([page, share]);
 const who = await lib.visitors(share);
 const cohorts = await lib.cohorts({ among: page, did: share, behaviours: [{ type: 'feature', id: 'feature-01', name: 'Export CSV' }] });
 return { share, page, hot, funnel, who: { n: who.ids.length, total: who.total, capped: who.capped }, cohorts };
-""")
+""", lib=True)
     r = output["result"]
     assert r["share"] == {"type": "feature", "id": "feature-03", "name": "Share Link"}
     assert r["page"] == {"type": "page", "id": "page-00", "name": "Dashboard"}
@@ -696,12 +696,16 @@ const names = ['share', 'export', 'widget', 'invite', 'bulk', 'filter'];
 const found = await Promise.all(names.map((n) => lib.find(n, { types: ['feature'] })));
 const none = await lib.find('zzz-no-such-name', { types: ['feature'] });
 return { hits: found.map((f) => f[0].name), none: none.length, cached: state.catalog.all.feature.length };
-""", backend=backend)
+""", backend=backend, lib=True)
     assert output["result"]["hits"] == ["Share Link", "Export CSV", "Add Widget", "Invite Teammate", "Bulk Edit", "Filter Results"]
     # Six lookups cost one catalog call; only the miss goes back to Pendo, for a search by meaning.
     assert [args.get("searchType") for _name, args in backend.calls] == [None, "semantic"]
     assert output["result"]["cached"] == 10 and "catalog" in output["state"]
-    description = tool_definitions(mock_catalog(), Limits())[1]["description"]
+    # The helper layer is optional: off unless asked for, and the generic mechanism works without it.
+    plain = tool_definitions(mock_catalog(), Limits())[1]["description"]
+    assert "lib." not in plain and "Raw tools" in plain
+    assert run("return typeof lib;")["result"] == "undefined"
+    description = tool_definitions(mock_catalog(), Limits(), lib=True)[1]["description"]
     assert description.index("High-level functions") < description.index("Raw tools")
     assert "- lib.funnel(steps, {appId?, days?}) → {visitors[], keptPct[]" in description and "2 calls + 1 per behaviour" in description
     assert "dateRange is {type: 'relative', lastNDays: N}" in description

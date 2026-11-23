@@ -65,48 +65,35 @@ Code Mode is shaped around those facts:
 | `userQuery` telemetry | Hidden from signatures. `execute` takes an `intent` and the host adds it to every call, so Pendo's analytics still see the task. |
 | Fan-out by design | `Promise.all` over the per-entity calls, joined in code. |
 
-## High-level functions (`lib`)
+## What Code Mode is here, and what it is not
 
-Four cold-start runs showed where a model's tokens go once it writes its own programs:
-reading tool documentation, probing result shapes, and returning data it only needs in
-order to choose an entity. Features that tried to manage that from the outside (learned
-shapes, previews, `full()`) helped little and sometimes misled the model.
+The mechanism is: the model writes a program, the program calls the server's tools
+(in parallel where it can), filters and joins the results, and returns only the
+answer. Everything needed for that is generic and derived from `tools/list`.
 
-`lib` takes the other route. It is a small library that ships with the server and runs
-inside the sandbox on top of the raw tools:
+Measured with a model writing its own programs (one run each, tokens estimated):
 
-| Function | Replaces |
+| | Conversation tokens, three questions |
 | --- | --- |
-| `lib.find(query, opts)` | Searching pages, features and track events and trimming the result |
-| `lib.frustration(opts)` | Four rankings plus one lookup per offending element |
-| `lib.funnel(steps, opts)` | `queryFunnel` and picking the numbers out of its result |
-| `lib.visitors(entity, opts)` | `entityUsage` per visitor |
-| `lib.cohorts({among, did, behaviours})` | One visitor list per entity, intersected in code |
-| `lib.guidePolls(opts)` | Finding guides with polls and one response query per guide |
+| Regular MCP | ~22,500 |
+| Code Mode, generic mechanism only | ~13,100 |
 
-Each returns a shape this package defines, so the one line shown to the model is exact
-and no trial run is needed. A function is listed only when the upstream has the tools
-it calls. The raw tools stay available for everything else.
+That roughly 40% is the result to rely on. What remained went to reading tool
+documentation, probing result shapes and returning data only to choose from it, all
+of which trace back to the upstream tools: no output schemas, verbose results, and
+one entity per call. Those are best fixed in the Pendo MCP server.
 
-Replayed over real responses collected earlier (not a live run), the five functions
-that answer the four benchmark questions returned about 2 KB in total from about 83 KB
-of raw tool results.
+### Optional helper layer (`--lib`)
 
-A fifth cold-start run, the first with `lib` (four questions, one run each, tokens
-estimated as bytes / 4):
+`lib.*` is a set of six hand-written functions (find, frustration, funnel, visitors,
+cohorts, guidePolls) that compose the raw tools and return small fixed shapes. With it
+a cold-start run on four questions used about 5,900 tokens against about 12,600
+without. That gain comes from hand-writing better endpoints for those questions, not
+from the Code Mode mechanism, and it would need maintaining as Pendo's tools change.
+It is off by default and kept as a demonstration of what more compact, schema'd tools
+upstream would be worth.
 
-| | Regular MCP | Code Mode before `lib` | Code Mode with `lib` |
-| --- | --- | --- | --- |
-| Conversation tokens | ~25,800 | ~12,600 | ~5,900 |
-| Model tool calls | 28 | 9 | 8 |
-| Searches or help reads | - | 2 help programs | 0 |
-
-Two of the eight programs failed on the 25-call limit, because the listing did not
-say how many calls each function makes (a loop over `lib.find`, and `lib.cohorts` with
-40 behaviours). The listing now gives each function's call cost, and `lib.find`
-matches names against a catalog fetched once, so repeated lookups are free.
-
-Result previews are now off by default (`--preview-bytes` turns them on).
+Result previews are also off by default (`--preview-bytes` turns them on).
 
 ## Keeping cost flat as Pendo adds tools
 

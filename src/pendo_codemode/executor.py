@@ -112,6 +112,7 @@ def execute_code(
     intent: str | None = None,
     state: dict[str, Any] | None = None,
     recipes: dict[str, str] | None = None,
+    lib: bool = False,
     node: str = "node",
 ) -> dict[str, Any]:
     """Run `code` and return {result, logs, calls, stats}.
@@ -120,7 +121,8 @@ def execute_code(
     a `userQuery` argument, and the catalog's pre-set defaults are filled in.
     `state` is the session's JSON object as the program finds it; the object
     as the program left it comes back under "state". `recipes` maps names to
-    saved program bodies, callable as `recipes.<name>(params)`.
+    saved program bodies, callable as `recipes.<name>(params)`. `lib` adds the
+    optional hand-written helper functions; the generic mechanism does not need them.
 
     `calls` lists each tool call with its duration and result size, so the
     caller can see how much data stayed out of the model's context.
@@ -208,7 +210,7 @@ def execute_code(
 
     try:
         send({"type": "start", "code": code, "tools": catalog.names(), "state": state or {}, "recipes": recipes or {},
-              "stdlib": stdlib.source()})
+              "stdlib": stdlib.source() if lib else ""})
         calls = 0
         rounds: dict[Any, int] = {}
         while True:

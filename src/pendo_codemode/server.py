@@ -89,9 +89,11 @@ def build_catalog(client: McpClient, args: argparse.Namespace) -> Catalog:
     return catalog
 
 
-def tool_definitions(catalog: Catalog, limits: Limits, recipes: RecipeStore | None = None) -> list[dict[str, Any]]:
+def tool_definitions(
+    catalog: Catalog, limits: Limits, recipes: RecipeStore | None = None, lib: bool = False
+) -> list[dict[str, Any]]:
     saved = recipes.index() if recipes else ""
-    functions = stdlib.available(set(catalog.tools))
+    functions = stdlib.available(set(catalog.tools)) if lib else []
     execute_description = (
         "Run a JavaScript program against Pendo and get back only what it returns. The program is the body of an "
         "async function; use `await`, `Promise.all` for independent calls, and `return` a small JSON answer. "
@@ -179,6 +181,7 @@ def handle_call(
     shapes_path: str | None = None,
     session: dict[str, Any] | None = None,
     recipes: RecipeStore | None = None,
+    lib: bool = False,
 ) -> dict[str, Any]:
     session = session if session is not None else {}
     if name == "search":
@@ -197,6 +200,7 @@ def handle_call(
                 intent=intent if isinstance(intent, str) else None,
                 state=session.get("state"),
                 recipes=recipes.code() if recipes else None,
+                lib=lib,
             )
             session["state"] = output.pop("state")
             if session["state"]:
@@ -231,6 +235,10 @@ def _add_upstream_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--shapes", metavar="FILE",
         help="Remember the structure of each tool's results here (key names and types only) and show it in signatures",
+    )
+    parser.add_argument(
+        "--lib", action="store_true",
+        help="Also offer lib.*: hand-written helper functions for common Pendo questions (an optional layer)",
     )
     parser.add_argument("--core", metavar="NAMES", help="Comma-separated tools always listed in full on a large server")
     parser.add_argument("--recipes", metavar="DIR", help="Directory of saved programs, callable as recipes.<name>(params)")
@@ -267,10 +275,10 @@ def serve_main(argv: list[str] | None = None) -> int:
         serve_stdio(
             name="pendo-codemode",
             instructions=INSTRUCTIONS,
-            list_tools=lambda: tool_definitions(catalog, limits, recipes),
+            list_tools=lambda: tool_definitions(catalog, limits, recipes, args.lib),
             call_tool=lambda name, arguments: handle_call(
                 name, arguments, catalog=catalog, client=client, limits=limits, shapes_path=args.shapes,
-                session=session, recipes=recipes,
+                session=session, recipes=recipes, lib=args.lib,
             ),
         )
     finally:
@@ -376,6 +384,7 @@ def cli_main(argv: list[str] | None = None) -> int:
             intent=args.intent,
             state=json.loads(state_file.read_text(encoding="utf-8")) if state_file and state_file.exists() else None,
             recipes=RecipeStore(args.recipes).code() if args.recipes else None,
+            lib=args.lib,
         )
         if state_file:
             state_file.write_text(json.dumps(result["state"], ensure_ascii=False), encoding="utf-8")
