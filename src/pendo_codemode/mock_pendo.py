@@ -256,7 +256,65 @@ def _guide_effectiveness(args: dict[str, Any]) -> dict[str, Any]:
     return {"meta": meta, "summary": summary, "rows": rows[: int(args.get("limit") or 20)]}
 
 
+POLLS = {  # guide id -> polls on it
+    "guide-03": [{"id": "poll-nps-like", "question": "How easy was this?", "type": "NumberScale", "answers": ["1", "2", "3", "4", "5"]}],
+    "guide-07": [{"id": "poll-setup", "question": "Did the checklist help?", "type": "PickList", "answers": ["Yes", "No"]},
+                 {"id": "poll-why", "question": "What was missing?", "type": "FreeForm", "answers": []}],
+}
+
+
+def _list_guides(args: dict[str, Any]) -> list[dict[str, Any]]:
+    if args.get("guideId"):
+        guide = next((g for g in GUIDES if g["id"] == args["guideId"]), None)
+        if guide is None:
+            raise ValueError(f"no guide with id {args['guideId']}")
+        return [{"id": guide["id"], "name": guide["name"], "state": guide["state"], "steps": [{"index": 0, "text": guide["name"]}]}]
+    found = [g for g in _guide_filter(args) if not args.get("search") or args["search"].lower() in g["name"].lower()]
+    page = found[int(args.get("offset") or 0):][: int(args.get("limit") or 50)]
+    rows = []
+    for guide in page:
+        row: dict[str, Any] = {"id": guide["id"], "name": guide["name"], "state": guide["state"],
+                               "launchMethod": guide["launchMethod"], "productAreaIds": [], "categoryIds": []}
+        if args.get("expand"):
+            row["steps"] = [{"id": f"{guide['id']}-s{i}", "type": "lightbox"} for i in range(guide["steps"])]
+            row["polls"] = [{"id": p["id"], "question": p["question"], "type": p["type"]} for p in POLLS.get(guide["id"], [])]
+        rows.append(row)
+    return rows
+
+
+def _guide_poll_responses(args: dict[str, Any]) -> dict[str, Any]:
+    polls = POLLS.get(args["guideId"])
+    if polls is None:
+        raise ValueError(f"guide {args['guideId']} has no polls")
+    wanted = set(args.get("pollIds") or [p["id"] for p in polls])
+    summary, rows = [], {}
+    for poll in (p for p in polls if p["id"] in wanted):
+        counts: dict[str, int] = {}
+        for index in range(18):
+            visitor = f"visitor-{index:02d}"
+            if _n("answered", poll["id"], visitor, mod=3) == 0:
+                continue
+            answer = poll["answers"][_n("ans", poll["id"], visitor, mod=len(poll["answers"]))] if poll["answers"] else f"comment {index}"
+            counts[answer] = counts.get(answer, 0) + 1
+            rows.setdefault(visitor, {"visitorId": visitor, "accountId": ACCOUNTS[index % len(ACCOUNTS)]})[poll["id"]] = answer
+        entry: dict[str, Any] = {"pollId": poll["id"], "question": poll["question"]}
+        if poll["answers"]:
+            entry["distribution"] = [{"response": r, "count": c} for r, c in sorted(counts.items())]
+        else:
+            entry["freeText"] = True
+        summary.append(entry)
+    return {"meta": _meta(_window(args["dateRange"])), "summary": {"polls": summary},
+            "rows": list(rows.values())[: int(args.get("limit") or 10)]}
+
+
 def _get_entity(args: dict[str, Any]) -> dict[str, Any]:
+    if args["entityType"] == "guide":
+        guide = next((g for g in GUIDES if g["id"] == args["entityId"]), None)
+        if guide is None:
+            raise ValueError(f"no guide with id {args['entityId']}")
+        polls = [{"id": p["id"], "question": p["question"], "type": p["type"]} for p in POLLS.get(guide["id"], [])]
+        return {"id": guide["id"], "type": "guide", "name": guide["name"], "appIds": [guide["appId"]], "state": guide["state"],
+                "launchMethod": guide["launchMethod"], "steps": [{"id": f"{guide['id']}-s0", "name": "Step 1", "polls": polls, "elements": []}]}
     entity = next((e for e in ENTITIES if e["id"] == args["entityId"] and e["type"] == args["entityType"]), None)
     if entity is None:
         raise ValueError(f"no {args['entityType']} with id {args['entityId']}")
@@ -507,6 +565,44 @@ TOOLS: list[tuple[dict[str, Any], Any]] = [
             "productArea": _PRODUCT_AREA, "segmentPipeline": _SEGMENT},
            ["startDate", "endDate", "subId"]),
      lambda args: []),
+    (_tool("listGuides",
+           "List and filter in-app guides, or fetch a single guide's full content. Three modes: list (default) "
+           "returns summary info per guide; expand=true returns detailed metadata including steps and polls; "
+           "guideId=<id> returns one guide's step-by-step text.\n\n"
+           "RETURNS:\n- List mode: summary info per guide (ID, name, description, state, type, launch method, "
+           "timestamps, product area IDs, guide category IDs)\n"
+           "- Expanded mode: detailed guide metadata per guide (steps, polls, scheduling, conversion, audienceSummary)\n"
+           "- Single guide mode: guide metadata, per-step structured content, and activation URL if eligible",
+           {"subId": _SUB, "appId": _APP, "status": _enum("public", "staged", "draft", "_pendingReview_", "disabled"),
+            "guideType": _enum("banner", "tooltip", "lightbox", "walkthrough", "whatsnew", "building-block", "group",
+                               "training", "launcher", "mobile-lightbox"),
+            "activation": _ACTIVATION, "expiration": _enum("active", "expired"),
+            "expand": _d(_B, "When true, returns detailed guide metadata (steps, polls, scheduling) instead of the summary."),
+            "guideId": _d(_S, "Fetch a single guide by ID and return its full content; other filters are ignored."),
+            "search": _d(_S, "Search query for finding guides. Requires searchType."),
+            "searchType": _d(_enum("semantic", "fuzzy"), "How to search. Requires search."),
+            "limit": _d(_N, "Maximum number of results to return (default 50, max 500)."),
+            "offset": _d(_N, "Number of matching results to skip."),
+            "productAreaId": _d(_S, "Guides that belong to one product area."),
+            "categoryId": _d(_S, "Guides that belong to one guide category.")},
+           ["subId"]),
+     _list_guides),
+    (_tool("guidePollResponses",
+           "Get per-poll response distribution and per-visitor response rows for a guide's non-NPS polls.\n\n"
+           "USE FOR: How visitors responded to polls in a guide: response distributions, individual visitor answers, "
+           "and per-poll breakdowns. Not for NPS guide score metrics.\n\n"
+           "RETURNS:\n- meta.dateRange: resolved startDate and endDate\n"
+           "- summary.polls: array of {pollId, question, distribution: [{response, count}]} for each poll. For "
+           "free-text polls freeText is true and distribution is omitted; refer to the per-visitor rows instead.\n"
+           "- rows: per-visitor with visitorId, accountId, browserTime, and one column per pollId (null if no response)",
+           {"subId": _SUB, "guideId": _d(_S, "The guide ID to fetch poll responses for."), "dateRange": _DATE_RANGE,
+            "pollIds": _d(_STRINGS, "Optional list of poll IDs to restrict results to. Omit for all non-NPS polls on the guide."),
+            "accountId": _d(_S, "Optional Pendo account ID to filter responses to a specific account."),
+            "includeAnonymous": _d(_B, "Whether to include unidentified visitors. Defaults to true."),
+            "limit": _d(_N, "Maximum number of visitor rows to return (default 10, max 200)."),
+            "segmentPipeline": _SEGMENT},
+           ["subId", "guideId", "dateRange"]),
+     _guide_poll_responses),
     (_tool("segmentList",
            "List or search the subscription's segments.\n\nRETURNS:\n- totalCount, offset, returned, and segments (id, name)",
            {"subId": _SUB, "substring": _d(_S, "Only return segments whose name or id contains this value."),

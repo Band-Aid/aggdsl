@@ -380,6 +380,12 @@ def test_recipe_results_are_what_the_question_asks():
     assert [row["change"] for row in movers["gainers"]] == sorted((row["change"] for row in movers["gainers"]), reverse=True)
     audit = run(read("guide_audit"))["result"]
     assert audit["lowestEngagement"][0]["engagementPct"] == min(g["engagementPct"] for g in audit["lowestEngagement"])
+    polls = run(read("guide_poll_responses"))
+    assert [g["guide"] for g in polls["result"]] == ["NPS survey", "Setup checklist"] and polls["stats"]["tool_calls"] == 3
+    checklist = polls["result"][1]["polls"]
+    assert set(checklist[0]["answers"]) <= {"Yes", "No"} and sum(checklist[0]["answers"].values()) > 0
+    assert list(checklist[1]["answers"]) == ["freeText"]  # free-text answers are counted, not returned
+    assert [g["id"] for g in polls["state"]["guidesWithPolls"]] == ["guide-03", "guide-07"]
     brief = run(read("account_brief"))
     assert brief["result"]["account"] == "Example Co 07" and brief["stats"]["tool_calls"] == 10
     assert len(brief["result"]["topFeatureAdoption"]) == 5
