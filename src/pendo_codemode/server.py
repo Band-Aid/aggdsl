@@ -107,6 +107,13 @@ def tool_definitions(catalog: Catalog, limits: Limits, recipes: RecipeStore | No
         "bulky intermediate data there (state.x = ...) instead of returning them, and read them back in the "
         "next program; each result lists what is stored. `table(rows)` returns rows as {columns, rows} to "
         "avoid repeating keys."
+        + (
+            f" A result over {limits.preview_bytes // 1000} KB comes back as a preview (the first items of each "
+            "list) and the full value is kept in `state.last`: narrow it in the next program, for example "
+            "state.last.rows.filter(...), or `return full(value)` if you really must read all of it. Prefer a "
+            "tool's own search and limit arguments over fetching everything."
+            if limits.preview_bytes else ""
+        )
         + (" `await recipes.<name>(params)` runs a saved program." if recipes else "")
         + "\n\nTools:\n" + catalog.index()
         + (f"\n\nSaved recipes:\n{saved}" if saved else "")
@@ -219,6 +226,10 @@ def _add_upstream_flags(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--core", metavar="NAMES", help="Comma-separated tools always listed in full on a large server")
     parser.add_argument("--recipes", metavar="DIR", help="Directory of saved programs, callable as recipes.<name>(params)")
+    parser.add_argument(
+        "--preview-bytes", type=int, default=4000,
+        help="Results larger than this come back as a preview with the full value in state.last (0 = off)",
+    )
     parser.add_argument("--timeout", type=float, default=60.0, help="Total seconds per program")
     parser.add_argument("--max-calls", type=int, default=25, help="Tool calls per program")
 
@@ -227,7 +238,7 @@ def serve_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="MCP stdio server: Pendo MCP in Code Mode (search + execute)")
     _add_upstream_flags(parser)
     args = parser.parse_args(argv)
-    limits = Limits(timeout_seconds=args.timeout, max_calls=args.max_calls)
+    limits = Limits(timeout_seconds=args.timeout, max_calls=args.max_calls, preview_bytes=max(0, args.preview_bytes))
     try:
         client = connect(args)
     except McpError as exc:
@@ -308,7 +319,7 @@ def cli_main(argv: list[str] | None = None) -> int:
 
             if args.allow_writes or args.allow_tool:
                 raise CodeModeError("bench is read-only: do not pass --allow-writes or --allow-tool")
-            limits = Limits(timeout_seconds=args.timeout, max_calls=args.max_calls)
+            limits = Limits(timeout_seconds=args.timeout, max_calls=args.max_calls, preview_bytes=max(0, args.preview_bytes))
             backend: Any = McpBackend(client)
             if args.simulate_latency_ms:
                 backend = benchmark.DelayedBackend(backend, args.simulate_latency_ms)
@@ -353,7 +364,7 @@ def cli_main(argv: list[str] | None = None) -> int:
             code,
             catalog=catalog,
             backend=McpBackend(client),
-            limits=Limits(timeout_seconds=args.timeout, max_calls=args.max_calls),
+            limits=Limits(timeout_seconds=args.timeout, max_calls=args.max_calls, preview_bytes=max(0, args.preview_bytes)),
             intent=args.intent,
             state=json.loads(state_file.read_text(encoding="utf-8")) if state_file and state_file.exists() else None,
             recipes=RecipeStore(args.recipes).code() if args.recipes else None,

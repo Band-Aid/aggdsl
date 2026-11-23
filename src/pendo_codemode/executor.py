@@ -35,6 +35,7 @@ class Limits:
     max_upstream_bytes: int = 4_000_000  # all tool results of one program
     max_output_bytes: int = 32_000  # what goes back to the model
     max_state_bytes: int = 2_000_000  # session state kept between programs
+    preview_bytes: int = 4_000  # larger results come back as a preview; 0 turns previews off
 
 
 class ToolBackend(Protocol):
@@ -53,6 +54,39 @@ class McpBackend:
         if not ok:
             raise CodeModeError(str(value))
         return value
+
+
+def preview_value(value: Any, items: int = 5, text: int = 200, depth: int = 0) -> Any:
+    """A cut-down copy of a JSON value: the first few items of each list, long strings trimmed."""
+    if isinstance(value, list):
+        shown = [preview_value(item, items, text, depth + 1) for item in value[:items]]
+        return shown + [f"… {len(value) - items} more not shown"] if len(value) > items else shown
+    if isinstance(value, dict):
+        if depth > 5:
+            return f"{{… {len(value)} keys}}"
+        keys = list(value)[:30]
+        cut = {key: preview_value(value[key], items, text, depth + 1) for key in keys}
+        if len(value) > 30:
+            cut["…"] = f"{len(value) - 30} more keys not shown"
+        return cut
+    if isinstance(value, str) and len(value) > text:
+        return value[:text] + f"… ({len(value)} chars)"
+    return value
+
+
+def _size(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+
+
+def make_preview(value: Any, budget: int) -> Any:
+    """Shrink until the preview fits the budget, giving up detail in steps."""
+    for items, text in ((5, 200), (3, 120), (2, 80), (1, 60)):
+        cut = preview_value(value, items, text)
+        if _size(cut) <= budget:
+            return cut
+    from .catalog import shape_of  # last resort: structure only
+
+    return {"shape": shape_of(value)[: max(200, budget)]}
 
 
 def _reader(stream: Any, out: "queue.Queue[str | None]") -> None:
@@ -206,16 +240,29 @@ def execute_code(
                 pool.submit(run_call, call_id, tool, args, rounds.setdefault(message.get("after"), len(rounds) + 1))
             elif kind == "done":
                 result = message.get("value")
-                serialized = json.dumps(result, ensure_ascii=False, allow_nan=False)
-                output_bytes = len(serialized.encode("utf-8"))
+                new_state = message.get("state")
+                if not isinstance(new_state, dict):
+                    raise CodeModeError("state must stay a plain object")
+                # `return full(value)` asks for the whole value; otherwise a large result is
+                # previewed and the full value stays in state for the next program.
+                wants_full = isinstance(result, dict) and set(result) == {"$full"}
+                if wants_full:
+                    result = result["$full"]
+                output_bytes = _size(result)
+                note = None
+                if limits.preview_bytes and output_bytes > limits.preview_bytes and not wants_full:
+                    new_state["last"] = result
+                    note = (
+                        f"result was {output_bytes:,} bytes, shown here as a preview; the full value is in "
+                        "state.last. Filter or aggregate it in your next program instead of reading it."
+                    )
+                    result = make_preview(result, limits.preview_bytes)
+                    output_bytes = _size(result)
                 if output_bytes > limits.max_output_bytes:
                     raise CodeModeError(
                         f"JavaScript result too large ({output_bytes} bytes, limit "
                         f"{limits.max_output_bytes}); aggregate in code and return a concise summary"
                     )
-                new_state = message.get("state")
-                if not isinstance(new_state, dict):
-                    raise CodeModeError("state must stay a plain object")
                 if len(json.dumps(new_state, ensure_ascii=False).encode("utf-8")) > limits.max_state_bytes:
                     raise CodeModeError("state too large; keep only what later programs need")
                 with stats_lock:
@@ -223,6 +270,7 @@ def execute_code(
                     total = upstream_bytes
                 return {
                     "result": result,
+                    **({"preview": note} if note else {}),
                     "state": new_state,
                     "logs": [str(entry) for entry in message.get("logs") or []],
                     "calls": finished,

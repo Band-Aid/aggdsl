@@ -74,6 +74,7 @@ function makeApi(tools) {
 
 // Helpers that run inside the sandbox. `table` drops repeated keys from row lists.
 const PRELUDE = `
+function full(value) { return { $full: value }; }
 function table(rows, columns) {
   const cols = columns || [...new Set(rows.flatMap((row) => Object.keys(row)))];
   return { columns: cols, rows: rows.map((row) => cols.map((c) => (row[c] === undefined ? null : row[c]))) };

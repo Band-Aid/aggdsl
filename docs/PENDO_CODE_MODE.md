@@ -87,6 +87,7 @@ the growth in tool count:
 | Session state | `state` persists between programs. A program stores ids and bulky intermediate data (`state.catalog = ...`) and returns a short answer; each result lists what is stored and how large it is. |
 | Saved recipes (`--recipes DIR`) | `execute` with `save_as: {name, description}` stores a working program. Later programs call `await recipes.<name>(params)`; saved recipes are listed in the description. |
 | `table(rows)` | Returns `{columns, rows}` so repeated keys are not sent back. |
+| Result previews (`--preview-bytes`, default 4000) | A larger result comes back as a preview: the first items of each list, long strings trimmed. The full value is kept in `state.last` for the next program to filter. `return full(value)` overrides it, up to the 32 KB limit. |
 
 Description size as the tool count grows (the real-shaped tools plus a synthetic long
 tail with 4 KB descriptions, an assumption about future tools):

@@ -218,6 +218,48 @@ return top.rows[0].entityName;
 
 
 @needs_node
+def test_large_results_come_back_as_a_preview_with_the_full_value_in_state():
+    code = "return { accounts: (await pendo.listAccounts({ limit: 30 })).rows, note: 'x'.repeat(500), total: 30 };"
+    output = run(code, limits=Limits(preview_bytes=600))
+    assert output["result"]["total"] == 30 and output["result"]["note"].endswith("… (500 chars)")
+    shown = output["result"]["accounts"]
+    assert shown[-1].endswith("more not shown") and len(shown) <= 6 and shown[0]["accountId"] == "Example Co 00"
+    assert output["stats"]["output_bytes"] <= 600 and "state.last" in output["preview"]
+    assert len(output["state"]["last"]["accounts"]) == 30  # nothing is lost
+    # The next program narrows the stored value without calling Pendo again.
+    backend = MockBackend()
+    second = run("return state.last.accounts.filter((a) => a.name.endsWith('7')).map((a) => a.name);",
+                 state=output["state"], backend=backend)
+    assert second["result"] == ["Example Co 07", "Example Co 17", "Example Co 27"] and backend.calls == []
+    assert "preview" not in second
+
+
+@needs_node
+def test_preview_can_be_overridden_or_switched_off():
+    code = "const rows = (await pendo.listAccounts({ limit: 30 })).rows; return %s;"
+    whole = run(code % "full(rows)", limits=Limits(preview_bytes=600))
+    assert len(whole["result"]) == 30 and "preview" not in whole and "last" not in whole["state"]
+    off = run(code % "rows", limits=Limits(preview_bytes=0))
+    assert len(off["result"]) == 30 and "preview" not in off
+    small = run("return { n: 1 };", limits=Limits(preview_bytes=600))
+    assert small["result"] == {"n": 1} and "preview" not in small and small["state"] == {}
+    with pytest.raises(CodeModeError, match="result too large"):  # the hard limit still applies to full()
+        run(code % "full(rows)", limits=Limits(preview_bytes=600, max_output_bytes=1000))
+
+
+def test_preview_gives_up_detail_in_steps_until_it_fits():
+    from pendo_codemode.executor import make_preview
+
+    rows = [{"id": i, "text": "y" * 300} for i in range(50)]
+    roomy = make_preview({"rows": rows}, 4000)
+    assert len(roomy["rows"]) == 6 and roomy["rows"][-1] == "… 45 more not shown"
+    tight = make_preview({"rows": rows}, 300)
+    assert tight["rows"][-1] == "… 48 more not shown" and tight["rows"][0]["text"].endswith("… (300 chars)")
+    assert len(json.dumps(tight, ensure_ascii=False).encode()) <= 300
+    assert make_preview({f"k{i}": "z" * 100 for i in range(200)}, 250) == {"shape": make_preview({f"k{i}": "z" * 100 for i in range(200)}, 250)["shape"]}
+
+
+@needs_node
 def test_table_helper_drops_repeated_keys():
     output = run("return table([{ a: 1, b: 2 }, { a: 3, c: 4 }]);")
     assert output["result"] == {"columns": ["a", "b", "c"], "rows": [[1, 2, None], [3, None, 4]]}
