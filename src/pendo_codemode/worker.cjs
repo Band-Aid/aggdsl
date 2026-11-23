@@ -72,19 +72,38 @@ function makeApi(tools) {
   });
 }
 
-async function execute(code, tools) {
+// Helpers that run inside the sandbox. `table` drops repeated keys from row lists.
+const PRELUDE = `
+function table(rows, columns) {
+  const cols = columns || [...new Set(rows.flatMap((row) => Object.keys(row)))];
+  return { columns: cols, rows: rows.map((row) => cols.map((c) => (row[c] === undefined ? null : row[c]))) };
+}
+`;
+
+async function execute(start) {
   const console_ = Object.freeze({ log, info: log, warn: log, error: log, debug: log });
-  const context = vm.createContext({ pendo: makeApi(tools), console: console_ }, {
+  const context = vm.createContext({ pendo: makeApi(start.tools.map(String)), console: console_ }, {
     name: 'pendo-code-mode',
     codeGeneration: { strings: false, wasm: false }
   });
+  const run = (source) => vm.runInContext(source, context, { timeout: 5000, displayErrors: false });
   try {
+    run(PRELUDE);
+    // `state` survives between programs of one session; it is plain JSON on both sides.
+    context.state = run(`JSON.parse(${JSON.stringify(JSON.stringify(start.state || {}))})`);
+    context.recipes = run('Object.create(null)');
+    for (const [name, source] of Object.entries(start.recipes || {})) {
+      try {
+        const body = run(`(async (params) => {\n'use strict';\n${source}\n})`);
+        context.recipes[name] = (params) => body(params === undefined ? {} : params);
+      } catch (error) {
+        context.recipes[name] = () => Promise.reject(new Error(`recipe ${name} does not compile: ${error.message}`));
+      }
+    }
     // The timeout bounds synchronous work; the Python host bounds the whole run.
-    const result = await vm.runInContext(`(async () => {\n'use strict';\n${code}\n})()`, context, {
-      timeout: 5000,
-      displayErrors: false
-    });
-    finish({ type: 'done', value: result === undefined ? null : result });
+    const result = await run(`(async (params) => {\n'use strict';\n${start.code}\n})({})`);
+    const state = JSON.parse(run('JSON.stringify(state === undefined ? {} : state)') || '{}');
+    finish({ type: 'done', value: result === undefined ? null : result, state });
   } catch (error) {
     finish({ type: 'error', message: String((error && error.message) || error) });
   }
@@ -104,7 +123,7 @@ input.on('line', (line) => {
       return;
     }
     started = true;
-    void execute(message.code, message.tools.map(String));
+    void execute(message);
     return;
   }
   if (finished || message.type !== 'result' || !pending.has(message.id)) return;

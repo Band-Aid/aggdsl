@@ -65,6 +65,45 @@ Code Mode is shaped around those facts:
 | `userQuery` telemetry | Hidden from signatures. `execute` takes an `intent` and the host adds it to every call, so Pendo's analytics still see the task. |
 | Fan-out by design | `Promise.all` over the per-entity calls, joined in code. |
 
+## Keeping cost flat as Pendo adds tools
+
+Measured with a model writing its own programs (three questions on one app, one
+run each, tokens estimated as bytes / 4):
+
+| | Regular MCP | Code Mode, signatures via `search` | Code Mode, API in the description |
+| --- | --- | --- | --- |
+| Model tool calls | 26 | 12 | 5 |
+| Conversation tokens | ~22,500 | ~20,400 | ~13,100 |
+
+In the best run 76% of the tokens were results the programs returned, much of it
+data returned only so a later program could use it. Four features target that and
+the growth in tool count:
+
+| Feature | What it does |
+| --- | --- |
+| API in the `execute` description | One line per tool: argument names and the shape of the result. No `search` call is needed for listed tools. |
+| Learned result shapes (`--shapes FILE`) | Pendo's tools publish no output schema, so the server records the structure of real results (key names and types, never data) and shows it. Fields that appear only for some arguments are marked `?`. |
+| Bounded listing (`--core a,b,c`) | With more than 25 tools, only core tools and the ones actually used get a full line; the rest are names. `await pendo.help(name)` returns a signature from inside a program. |
+| Session state | `state` persists between programs. A program stores ids and bulky intermediate data (`state.catalog = ...`) and returns a short answer; each result lists what is stored and how large it is. |
+| Saved recipes (`--recipes DIR`) | `execute` with `save_as: {name, description}` stores a working program. Later programs call `await recipes.<name>(params)`; saved recipes are listed in the description. |
+| `table(rows)` | Returns `{columns, rows}` so repeated keys are not sent back. |
+
+Description size as the tool count grows (the real-shaped tools plus a synthetic long
+tail with 4 KB descriptions, an assumption about future tools):
+
+| Tools | Regular MCP definitions | Code Mode definitions |
+| --- | --- | --- |
+| 12 | ~6,200 tokens | ~1,200 |
+| 132 | ~131,000 | ~1,700 |
+| 412 | ~423,000 | ~2,600 |
+
+State, recipes and the bounded listing are covered by tests against the mock. Their
+effect on a model's token use has not been measured yet.
+
+What this repo cannot fix, and Pendo's server can: published output schemas, batch
+forms of the per-entity tools (one program needed 22 `entityUsage` calls), and running
+programs next to the aggregation engine to remove round trips.
+
 ## Recipes
 
 [`examples/pendo_code_mode/`](../examples/pendo_code_mode/) holds four programs written

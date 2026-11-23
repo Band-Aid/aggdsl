@@ -17,7 +17,27 @@ from typing import Any
 
 from .catalog import Catalog, Tool
 from .executor import CodeModeError, Limits, McpBackend, execute_code
+from .recipes import RecipeStore
 from .mcp_wire import HttpTransport, McpClient, McpError, StdioTransport, serve_stdio, text_result
+
+# Listed in full when the upstream has too many tools to list them all. These are the
+# read primitives most questions are built from; names absent upstream are skipped.
+DEFAULT_CORE = (
+    "listPagesFeaturesAndEvents,getEntity,aggregateEntityUsage,entityUsage,appUsage,queryFunnel,"
+    "sessionReplayList,listAccounts,listVisitors,visitorActivity,segmentList,listGuides,"
+    "aggregateGuideMetrics,guideEffectivenessMetrics"
+)
+
+
+def describe_state(state: dict[str, Any]) -> dict[str, str]:
+    """A receipt of what is stored, so the model knows what it can reuse without seeing it."""
+    receipt = {}
+    for key, value in state.items():
+        size = len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+        kind = f"array[{len(value)}]" if isinstance(value, list) else f"object[{len(value)} keys]" if isinstance(value, dict) else type(value).__name__
+        receipt[key] = f"{kind}, {size:,} bytes"
+    return receipt
+
 
 INSTRUCTIONS = (
     "Pendo in Code Mode. Call `search` to get the signatures of the Pendo tools you need, then "
@@ -59,13 +79,17 @@ def build_catalog(client: McpClient, args: argparse.Namespace) -> Catalog:
         defaults[key] = value
     if args.mock:
         defaults.setdefault("subId", "mock-sub")
-    catalog = Catalog(tools, allow_writes=args.allow_writes, allow_tools=args.allow_tool, defaults=defaults)
+    core = [name.strip() for name in (args.core or DEFAULT_CORE).split(",") if name.strip()]
+    catalog = Catalog(
+        tools, allow_writes=args.allow_writes, allow_tools=args.allow_tool, defaults=defaults, core=core
+    )
     if args.shapes:
         catalog.load_shapes(args.shapes)
     return catalog
 
 
-def tool_definitions(catalog: Catalog, limits: Limits) -> list[dict[str, Any]]:
+def tool_definitions(catalog: Catalog, limits: Limits, recipes: RecipeStore | None = None) -> list[dict[str, Any]]:
+    saved = recipes.index() if recipes else ""
     execute_description = (
         "Run a JavaScript program against Pendo. Each Pendo tool is an async function: "
         "`await pendo.<tool>(args)` takes the tool's arguments object and resolves to its parsed JSON "
@@ -79,7 +103,13 @@ def tool_definitions(catalog: Catalog, limits: Limits) -> list[dict[str, Any]]:
         "enough; `await pendo.help(name)` returns the same from inside a program. Never guess a result shape: "
         "when it is not shown, look at it with a small program first."
         + (f" Pre-set arguments you may omit: {', '.join(catalog.defaults)}." if catalog.defaults else "")
+        + " `state` is an object that persists between your programs in this session: put ids, lookups and "
+        "bulky intermediate data there (state.x = ...) instead of returning them, and read them back in the "
+        "next program; each result lists what is stored. `table(rows)` returns rows as {columns, rows} to "
+        "avoid repeating keys."
+        + (" `await recipes.<name>(params)` runs a saved program." if recipes else "")
         + "\n\nTools:\n" + catalog.index()
+        + (f"\n\nSaved recipes:\n{saved}" if saved else "")
     )
     return [
         {
@@ -110,6 +140,12 @@ def tool_definitions(catalog: Catalog, limits: Limits) -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "code": {"type": "string", "description": "Body of an async function; use `return`."},
+                    "save_as": {
+                        "type": "object",
+                        "description": "Save this program as a recipe if it succeeds. Write it to read its inputs from `params`.",
+                        "properties": {"name": {"type": "string"}, "description": {"type": "string"}},
+                        "required": ["name", "description"],
+                    },
                     "intent": {
                         "type": "string",
                         "description": "The task in under 20 words; passed to Pendo with each call for its usage analytics.",
@@ -126,7 +162,10 @@ def tool_definitions(catalog: Catalog, limits: Limits) -> list[dict[str, Any]]:
 def handle_call(
     name: str, arguments: dict[str, Any], *, catalog: Catalog, client: McpClient, limits: Limits,
     shapes_path: str | None = None,
+    session: dict[str, Any] | None = None,
+    recipes: RecipeStore | None = None,
 ) -> dict[str, Any]:
+    session = session if session is not None else {}
     if name == "search":
         limit = arguments.get("limit")
         limit = limit if isinstance(limit, int) and 0 < limit <= 50 else 8
@@ -141,7 +180,16 @@ def handle_call(
                 backend=McpBackend(client),
                 limits=limits,
                 intent=intent if isinstance(intent, str) else None,
+                state=session.get("state"),
+                recipes=recipes.code() if recipes else None,
             )
+            session["state"] = output.pop("state")
+            if session["state"]:
+                output["state"] = describe_state(session["state"])
+            save_as = arguments.get("save_as")
+            if recipes and isinstance(save_as, dict):
+                recipes.save(str(save_as.get("name")), str(save_as.get("description")), arguments.get("code"))
+                output["saved"] = f"recipes.{save_as.get('name')}"
             if shapes_path:
                 catalog.save_shapes(shapes_path)
             # The per-call trace is for humans at the CLI; the model only needs the answer.
@@ -149,7 +197,7 @@ def handle_call(
             if not output["logs"]:
                 del output["logs"]
             return text_result(output)
-        except (CodeModeError, McpError) as exc:
+        except (CodeModeError, McpError, ValueError) as exc:
             return text_result(str(exc), is_error=True)
     return text_result(f"Unknown tool: {name}", is_error=True)
 
@@ -169,6 +217,8 @@ def _add_upstream_flags(parser: argparse.ArgumentParser) -> None:
         "--shapes", metavar="FILE",
         help="Remember the structure of each tool's results here (key names and types only) and show it in signatures",
     )
+    parser.add_argument("--core", metavar="NAMES", help="Comma-separated tools always listed in full on a large server")
+    parser.add_argument("--recipes", metavar="DIR", help="Directory of saved programs, callable as recipes.<name>(params)")
     parser.add_argument("--timeout", type=float, default=60.0, help="Total seconds per program")
     parser.add_argument("--max-calls", type=int, default=25, help="Tool calls per program")
 
@@ -189,6 +239,8 @@ def serve_main(argv: list[str] | None = None) -> int:
         client.close()
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    session: dict[str, Any] = {}
+    recipes = RecipeStore(args.recipes) if args.recipes else None
     print(f"pendo-codemode: {len(catalog.tools)} tools exposed", file=sys.stderr)
     if catalog.blocked:
         print(f"pendo-codemode: hidden (not read-only): {', '.join(catalog.blocked)}", file=sys.stderr)
@@ -196,9 +248,10 @@ def serve_main(argv: list[str] | None = None) -> int:
         serve_stdio(
             name="pendo-codemode",
             instructions=INSTRUCTIONS,
-            list_tools=lambda: tool_definitions(catalog, limits),
+            list_tools=lambda: tool_definitions(catalog, limits, recipes),
             call_tool=lambda name, arguments: handle_call(
-                name, arguments, catalog=catalog, client=client, limits=limits, shapes_path=args.shapes
+                name, arguments, catalog=catalog, client=client, limits=limits, shapes_path=args.shapes,
+                session=session, recipes=recipes,
             ),
         )
     finally:
@@ -215,6 +268,7 @@ def cli_main(argv: list[str] | None = None) -> int:
     tools.add_argument("query", nargs="?", default="")
     tools.add_argument("--detail", choices=["summary", "compact", "signature", "full"], default="signature")
     run.add_argument("--intent", help="One-line task summary forwarded to Pendo as userQuery")
+    run.add_argument("--state", metavar="FILE", help="JSON file holding session state between runs")
     bench = sub.add_parser("bench", help="Compare regular MCP calls with Code Mode (read-only)")
     bench.add_argument("files", nargs="+", help="JavaScript programs to measure")
     bench.add_argument("--runs", type=int, default=3, help="Repetitions; the median is reported")
@@ -286,13 +340,19 @@ def cli_main(argv: list[str] | None = None) -> int:
                                        runs=max(1, args.runs), delay_ms=args.simulate_latency_ms))
             return 0
         code = Path(args.file).read_text(encoding="utf-8") if args.file else sys.stdin.read()
+        state_file = Path(args.state) if args.state else None
         result = execute_code(
             code,
             catalog=catalog,
             backend=McpBackend(client),
             limits=Limits(timeout_seconds=args.timeout, max_calls=args.max_calls),
             intent=args.intent,
+            state=json.loads(state_file.read_text(encoding="utf-8")) if state_file and state_file.exists() else None,
+            recipes=RecipeStore(args.recipes).code() if args.recipes else None,
         )
+        if state_file:
+            state_file.write_text(json.dumps(result["state"], ensure_ascii=False), encoding="utf-8")
+        result["state"] = describe_state(result["state"])
         if args.shapes:
             catalog.save_shapes(args.shapes)
     except (CodeModeError, McpError, OSError, RuntimeError, ValueError) as exc:

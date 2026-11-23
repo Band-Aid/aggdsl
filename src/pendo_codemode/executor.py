@@ -34,6 +34,7 @@ class Limits:
     max_call_result_bytes: int = 1_000_000  # one tool result handed to JavaScript
     max_upstream_bytes: int = 4_000_000  # all tool results of one program
     max_output_bytes: int = 32_000  # what goes back to the model
+    max_state_bytes: int = 2_000_000  # session state kept between programs
 
 
 class ToolBackend(Protocol):
@@ -70,12 +71,17 @@ def execute_code(
     backend: ToolBackend,
     limits: Limits | None = None,
     intent: str | None = None,
+    state: dict[str, Any] | None = None,
+    recipes: dict[str, str] | None = None,
     node: str = "node",
 ) -> dict[str, Any]:
     """Run `code` and return {result, logs, calls, stats}.
 
     `intent` is a one-line task summary; it is forwarded to tools that accept
     a `userQuery` argument, and the catalog's pre-set defaults are filled in.
+    `state` is the session's JSON object as the program finds it; the object
+    as the program left it comes back under "state". `recipes` maps names to
+    saved program bodies, callable as `recipes.<name>(params)`.
 
     `calls` lists each tool call with its duration and result size, so the
     caller can see how much data stayed out of the model's context.
@@ -162,7 +168,7 @@ def execute_code(
             pass  # the program already ended
 
     try:
-        send({"type": "start", "code": code, "tools": catalog.names()})
+        send({"type": "start", "code": code, "tools": catalog.names(), "state": state or {}, "recipes": recipes or {}})
         calls = 0
         rounds: dict[Any, int] = {}
         while True:
@@ -207,11 +213,17 @@ def execute_code(
                         f"JavaScript result too large ({output_bytes} bytes, limit "
                         f"{limits.max_output_bytes}); aggregate in code and return a concise summary"
                     )
+                new_state = message.get("state")
+                if not isinstance(new_state, dict):
+                    raise CodeModeError("state must stay a plain object")
+                if len(json.dumps(new_state, ensure_ascii=False).encode("utf-8")) > limits.max_state_bytes:
+                    raise CodeModeError("state too large; keep only what later programs need")
                 with stats_lock:
                     finished = [dict(entry) for entry in trace]
                     total = upstream_bytes
                 return {
                     "result": result,
+                    "state": new_state,
                     "logs": [str(entry) for entry in message.get("logs") or []],
                     "calls": finished,
                     "stats": {

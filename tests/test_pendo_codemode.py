@@ -113,16 +113,25 @@ def test_search_ranks_name_matches_and_splits_camel_case():
     assert catalog.describe("segments", limit=1, detail="summary") == "- pendo.segmentList: List or search the subscription's segments."
 
 
-def test_index_stays_small_for_a_server_with_many_tools():
+def test_index_stays_bounded_for_a_server_with_many_tools():
     small = mock_catalog().index()
     assert "- pendo.segmentList({substring?, offset?})  // List or search the subscription's segments." in small
     assert "- pendo.entityUsage({entityType, entityId, dateRange, groupBy?" in small  # required arguments first
     read = {"readOnlyHint": True}
-    many = Catalog(Tool.from_mcp({"name": f"{verb}Thing{i}", "description": "x" * 5000, "annotations": read})
-                   for verb in ("list", "get", "query") for i in range(45))
-    index = many.index()
-    assert index.splitlines()[0].startswith("- list: listThing0, listThing1,")
-    assert len(index.splitlines()) == 3 and len(index) < 3000
+    props = {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}
+    tools = [Tool.from_mcp({"name": f"{verb}Thing{i}", "description": "x" * 5000, "annotations": read, "inputSchema": props})
+             for verb in ("list", "get", "query") for i in range(45)]
+    many = Catalog(tools, core=["getThing7", "notUpstream"])
+    many.observe("queryThing3", {"rows": [{"n": 1}]})
+    lines = many.index().splitlines()
+    # Core tools and tools that have been used get a full line; the other 133 are names only.
+    assert lines[0] == "- pendo.getThing7({id})  // " + "x" * 109 + "…"
+    assert lines[1] == "- pendo.queryThing3({id}) → {rows: [{n}]}"
+    assert lines[2].startswith("More tools (133); get a signature with")
+    assert len(lines) == 6 and len(many.index()) < 3500
+    # Doubling the tool count adds names, not signatures.
+    bigger = Catalog(tools + [Tool.from_mcp({"name": f"showThing{i}", "annotations": read}) for i in range(135)], core=["getThing7"])
+    assert len(bigger.index()) - len(many.index()) < 2000
 
 
 def test_observed_result_shapes_describe_structure_without_data():
@@ -136,11 +145,21 @@ def test_observed_result_shapes_describe_structure_without_data():
     assert shape_of([{"requestId": "r", "rows": []}]) == "{requestId: string, rows: unknown[]}[]"
     catalog = mock_catalog()
     catalog.observe("entityUsage", value)
-    catalog.observe("entityUsage", {"rows": []})  # a poorer sample does not replace a richer one
     catalog.observe("notATool", value)
     assert catalog.shapes == {"entityUsage": shape}
-    assert f" * RESULT SHAPE (observed): {shape}" in catalog.signature(catalog.tools["entityUsage"])
-    assert catalog.compact(catalog.tools["entityUsage"]).endswith("}) → {meta: {hasMore}, rows: [{accountId, events, note, extra}]}")
+    assert f" * RESULT SHAPE (observed; ? = not always present): {shape}" in catalog.signature(catalog.tools["entityUsage"])
+    assert catalog.compact(catalog.tools["entityUsage"]).endswith("}) → {meta: {hasMore}, rows: [{accountId, events, note, extra?}]}")
+
+
+def test_fields_that_depend_on_the_arguments_are_marked_optional():
+    """Page rankings carry U-turn counts and feature rankings do not; a merged shape must say so."""
+    catalog = mock_catalog()
+    catalog.observe("aggregateEntityUsage", {"rows": [{"entityId": "p", "totalEvents": 1, "totalUTurnCount": 2}]})
+    catalog.observe("aggregateEntityUsage", {"rows": [{"entityId": "f", "totalEvents": 1}], "summary": {"n": 1}})
+    assert catalog.shapes["aggregateEntityUsage"] == (
+        "{rows: {entityId: string, totalEvents: number, totalUTurnCount?: number}[], summary?: {n: number}}"
+    )
+    assert catalog.uses["aggregateEntityUsage"] == 2
 
 
 @needs_node
@@ -153,7 +172,54 @@ def test_running_a_program_teaches_the_catalog_result_shapes(tmp_path):
     catalog.save_shapes(path)
     fresh = mock_catalog()
     fresh.load_shapes(path)
-    assert fresh.shapes == catalog.shapes
+    assert fresh.shapes == catalog.shapes and fresh.uses == catalog.uses
+
+
+@needs_node
+def test_state_carries_data_between_programs_without_returning_it():
+    first = run("""
+const features = await pendo.listPagesFeaturesAndEvents({ type: 'feature' });
+state.features = Object.fromEntries(features.map((f) => [f.name, f.id]));
+return { stored: features.length };
+""")
+    assert first["result"] == {"stored": 10} and len(first["state"]["features"]) == 10
+    backend = MockBackend()
+    second = run(f"""
+const usage = await pendo.entityUsage({{
+  entityType: 'feature', entityId: state.features['Export CSV'], dateRange: {RANGE}, groupBy: 'account', limit: 1
+}});
+state.lastTop = usage.rows[0].accountId;
+return state.lastTop;
+""", state=first["state"], backend=backend)
+    assert second["result"] == "Example Co 29"
+    assert [name for name, _args in backend.calls] == ["entityUsage"]  # no second lookup of the id
+    assert set(second["state"]) == {"features", "lastTop"}
+    with pytest.raises(CodeModeError, match="state too large"):
+        run("state.big = 'x'.repeat(5000); return 1;", limits=Limits(max_state_bytes=1000))
+
+
+@needs_node
+def test_recipes_are_saved_programs_called_with_params(tmp_path):
+    from pendo_codemode.recipes import RecipeStore
+
+    store = RecipeStore(tmp_path / "recipes")
+    store.save("topFeature", "Most-used feature over params.days days", f"""
+const top = await pendo.aggregateEntityUsage({{ entityType: 'feature', dateRange: {{ type: 'relative', lastNDays: params.days }}, limit: 1 }});
+return top.rows[0].entityName;
+""")
+    assert store.index() == "- recipes.topFeature(params)  // Most-used feature over params.days days"
+    output = run("return [await recipes.topFeature({ days: 30 }), typeof recipes.missing];", recipes=store.code())
+    assert output["result"] == ["Filter Results", "undefined"] and output["stats"]["tool_calls"] == 1
+    with pytest.raises(ValueError, match="recipe name"):
+        store.save("../evil", "x", "return 1")
+    broken = run("try { await recipes.bad(); } catch (e) { return e.message; }", recipes={"bad": "return ("})
+    assert "recipe bad does not compile" in broken["result"]
+
+
+@needs_node
+def test_table_helper_drops_repeated_keys():
+    output = run("return table([{ a: 1, b: 2 }, { a: 3, c: 4 }]);")
+    assert output["result"] == {"columns": ["a", "b", "c"], "rows": [[1, 2, None], [3, None, 4]]}
 
 
 @needs_node
@@ -353,6 +419,27 @@ def test_server_exposes_two_tools_over_a_real_mcp_chain():
 
         ok, message = unwrap_tool_result(client.call_tool("execute", {"code": "return pendo.createSegment({name:'x'})"}))
         assert not ok and "Unknown Pendo tool" in message
+    finally:
+        client.close()
+
+
+@needs_node
+def test_server_keeps_state_and_recipes_across_execute_calls(tmp_path):
+    client = codemode_server("--recipes", str(tmp_path))
+    try:
+        ok, first = unwrap_tool_result(client.call_tool("execute", {
+            "code": "state.ids = (await pendo.segmentList()).segments.map((s) => s.id); return state.ids.length;",
+        }))
+        assert ok and first["result"] == 3 and first["state"] == {"ids": "array[3], 27 bytes"}
+        ok, second = unwrap_tool_result(client.call_tool("execute", {
+            "code": "return (params.prefix || '') + state.ids[0];",
+            "save_as": {"name": "firstSegment", "description": "First stored segment id, with params.prefix"},
+        }))
+        assert ok and second["result"] == "seg-0" and second["saved"] == "recipes.firstSegment"
+        execute = next(tool for tool in client.list_tools() if tool["name"] == "execute")
+        assert "- recipes.firstSegment(params)  // First stored segment id, with params.prefix" in execute["description"]
+        ok, third = unwrap_tool_result(client.call_tool("execute", {"code": "return await recipes.firstSegment({ prefix: '#' });"}))
+        assert ok and third["result"] == "#seg-0"
     finally:
         client.close()
 

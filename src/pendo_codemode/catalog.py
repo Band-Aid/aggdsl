@@ -126,27 +126,23 @@ def ts_type(schema: Any, depth: int = 0, shared: Mapping[str, str] | None = None
     )
 
 
-def shape_of(value: Any, depth: int = 0) -> str:
-    """Describe a JSON value's structure compactly: key names and types, no data."""
+# --- learned result shapes ---------------------------------------------------------
+# A shape tree holds structure only, never data:
+#   scalar -> "string" | "number" | "boolean" | "null"
+#   list   -> {"[]": element tree or None}
+#   object -> {"{}": {key: [tree, optional]}}
+
+
+def tree_of(value: Any, depth: int = 0) -> Any:
     if isinstance(value, dict):
-        if depth > 3:
-            return "{…}"
-        parts = [f"{_key(k)}: {shape_of(v, depth + 1)}" for k, v in list(value.items())[:14]]
-        return "{" + ", ".join(parts + (["…"] if len(value) > 14 else [])) + "}"
+        if depth > 4:
+            return {"{}": {}}
+        return {"{}": {str(k): [tree_of(v, depth + 1), False] for k, v in list(value.items())[:40]}}
     if isinstance(value, list):
-        if not value:
-            return "unknown[]"
-        items = value[:5]
-        if all(isinstance(item, dict) for item in items):
-            merged: dict[str, Any] = {}
-            for item in items:
-                for key, inner in item.items():
-                    if merged.get(key) is None:
-                        merged[key] = inner  # prefer a non-null sample of each field
-            common = set.intersection(*(set(item) for item in items))
-            body = shape_of({(k if k in common else f"{k}?"): v for k, v in merged.items()}, depth)
-            return body.replace('"', "") + "[]" if depth <= 3 else "{…}[]"
-        return shape_of(items[0], depth + 1) + "[]"
+        element = None
+        for item in value[:8]:
+            element = merge_trees(element, tree_of(item, depth + 1))
+        return {"[]": element}
     if isinstance(value, bool):
         return "boolean"
     if isinstance(value, (int, float)):
@@ -154,25 +150,55 @@ def shape_of(value: Any, depth: int = 0) -> str:
     return "null" if value is None else "string"
 
 
-def brief_shape(value: Any, depth: int = 0) -> str:
-    """Key names only, for one-line listings: {summary: {total}, rows: [{id, name}]}."""
-    if isinstance(value, list):
-        dicts = [item for item in value[:5] if isinstance(item, dict)]
-        if not dicts:
-            return "[]"
-        merged: dict[str, Any] = {}
-        for item in dicts:
-            for key, inner in item.items():
-                if merged.get(key) is None:
-                    merged[key] = inner
-        return "[" + brief_shape(merged, depth) + "]"
-    if not isinstance(value, dict):
-        return ""
-    parts = []
-    for key, inner in list(value.items())[:24]:
-        nested = brief_shape(inner, depth + 1) if depth < 2 and isinstance(inner, (dict, list)) else ""
-        parts.append(f"{_key(key)}: {nested}" if nested not in ("", "[]") else (f"{_key(key)}[]" if nested == "[]" else _key(key)))
-    return "{" + ", ".join(parts) + "}"
+def merge_trees(a: Any, b: Any) -> Any:
+    """Combine two observations; a key missing from either becomes optional."""
+    if a is None or a == "null":
+        return b if a is None or b is not None else a
+    if b is None or b == "null":
+        return a
+    if isinstance(a, dict) and isinstance(b, dict):
+        if "{}" in a and "{}" in b:
+            fields: dict[str, list[Any]] = {}
+            for key in list(a["{}"]) + [k for k in b["{}"] if k not in a["{}"]]:
+                left, right = a["{}"].get(key), b["{}"].get(key)
+                if left and right:
+                    fields[key] = [merge_trees(left[0], right[0]), left[1] or right[1]]
+                else:
+                    fields[key] = [(left or right)[0], True]
+            return {"{}": fields}
+        if "[]" in a and "[]" in b:
+            return {"[]": merge_trees(a["[]"], b["[]"])}
+    return a
+
+
+def render_tree(tree: Any, *, types: bool = True, depth: int = 0) -> str:
+    """Render a shape tree. With types=False only key names are shown (for one-line listings)."""
+    if isinstance(tree, dict) and "{}" in tree:
+        parts = []
+        for key, (inner, optional) in tree["{}"].items():
+            name = _key(key) + ("?" if optional else "")
+            nested = isinstance(inner, dict) and (inner.get("{}") or inner.get("[]") is not None)
+            if types:
+                parts.append(f"{name}: {render_tree(inner, depth=depth + 1)}")
+            elif nested and depth < 2:
+                body = render_tree(inner, types=False, depth=depth + 1)
+                parts.append(f"{name}: {body}" if body not in ("[]", "{}") else f"{name}{body if body == '[]' else ''}")
+            else:
+                parts.append(name + ("[]" if isinstance(inner, dict) and "[]" in inner else ""))
+        return "{" + ", ".join(parts) + "}"
+    if isinstance(tree, dict) and "[]" in tree:
+        inner = tree["[]"]
+        if types:
+            return (render_tree(inner, depth=depth) if inner is not None else "unknown") + "[]"
+        if isinstance(inner, dict) and inner.get("{}"):
+            return "[" + render_tree(inner, types=False, depth=depth) + "]"
+        return "[]"
+    return str(tree) if types else ""
+
+
+def shape_of(value: Any) -> str:
+    """Describe a JSON value's structure compactly: key names and types, no data."""
+    return render_tree(tree_of(value))
 
 
 def _tokens(text: str) -> set[str]:
@@ -191,7 +217,9 @@ class Catalog:
         allow_writes: bool = False,
         allow_tools: Iterable[str] = (),
         defaults: Mapping[str, Any] | None = None,
+        core: Iterable[str] = (),
     ) -> None:
+        self.core = list(core)  # tools always listed in full on a large server
         patterns = list(allow_tools)  # exact names or globs such as "list*"
         self.defaults: dict[str, Any] = dict(defaults or {})
         self.tools: dict[str, Tool] = {}
@@ -206,15 +234,18 @@ class Catalog:
         self.shared = self._find_shared_types()
         # Result shapes seen in real calls. Pendo's tools publish no output schema, so this
         # is how a program learns what a tool returns without a trial run.
-        self.shapes: dict[str, str] = {}
-        self.briefs: dict[str, str] = {}
+        self.trees: dict[str, Any] = {}
+        self.uses: dict[str, int] = {}
+
+    @property
+    def shapes(self) -> dict[str, str]:
+        return {name: render_tree(tree) for name, tree in self.trees.items()}
 
     def observe(self, name: str, value: Any) -> None:
-        """Remember the structure of a tool's result (structure only, never data)."""
-        shape = shape_of(value)
-        if name in self.tools and len(shape) > len(self.shapes.get(name, "")):
-            self.shapes[name] = shape
-            self.briefs[name] = brief_shape(value)
+        """Fold one result's structure into what is known about a tool (structure only, never data)."""
+        if name in self.tools:
+            self.trees[name] = merge_trees(self.trees.get(name), tree_of(value))
+            self.uses[name] = self.uses.get(name, 0) + 1
 
     def load_shapes(self, path: Any) -> None:
         try:
@@ -223,14 +254,14 @@ class Catalog:
         except (OSError, ValueError):
             return
         for name, entry in stored.items():
-            if name in self.tools and isinstance(entry, dict) and isinstance(entry.get("shape"), str):
-                self.shapes[name] = entry["shape"]
-                self.briefs[name] = str(entry.get("brief") or "")
+            if name in self.tools and isinstance(entry, dict) and "tree" in entry:
+                self.trees[name] = entry["tree"]
+                self.uses[name] = int(entry.get("uses") or 1)
 
     def save_shapes(self, path: Any) -> None:
         with open(path, "w", encoding="utf-8") as handle:
-            stored = {name: {"shape": shape, "brief": self.briefs.get(name, "")} for name, shape in self.shapes.items()}
-            json.dump(stored, handle, ensure_ascii=False, indent=1, sort_keys=True)
+            stored = {name: {"tree": tree, "uses": self.uses.get(name, 1)} for name, tree in self.trees.items()}
+            json.dump(stored, handle, ensure_ascii=False)
 
     # -- shared parameter types ------------------------------------------------
 
@@ -283,8 +314,9 @@ class Catalog:
         for heading, body in sections.items():
             if heading and (full or heading == "RETURNS"):
                 doc.append(f"{heading}: {_squash(body, 6000 if full else 900)}")
-        if tool.name in self.shapes:
-            doc.append(f"RESULT SHAPE (observed): {_squash(self.shapes[tool.name], 6000 if full else 900)}")
+        if tool.name in self.trees:
+            shape = render_tree(self.trees[tool.name])
+            doc.append(f"RESULT SHAPE (observed; ? = not always present): {_squash(shape, 6000 if full else 1100)}")
         lines = ["/**"] + [f" * {line}" for line in doc] + [" */"] if doc else []
         returns = ts_type(tool.output_schema) if tool.output_schema else "unknown"
         visible = {k: v for k, v in tool.properties.items() if k != INTENT_PARAM}
@@ -317,19 +349,31 @@ class Catalog:
         names = [k for k in tool.properties if k != INTENT_PARAM and k not in self.defaults]
         names.sort(key=lambda k: k not in required)
         args = ", ".join(k if k in required else f"{k}?" for k in names)
-        returns = self.briefs.get(tool.name)
+        returns = render_tree(self.trees[tool.name], types=False) if tool.name in self.trees else ""
         tail = f" → {_squash(returns, 520)}" if returns else f"  // {_squash(tool.summary, 110)}"
         return f"{tool.accessor}({{{args}}}){tail}"
 
-    def index(self) -> str:
-        """Every tool, small enough to live in a tool description."""
+    def listed(self, limit: int = 18) -> list[Tool]:
+        """Tools that get a full line in the index: all of a small catalog, else core plus most used."""
         if len(self.tools) <= 25:
-            return "\n".join(f"- {self.compact(t)}" for t in self.tools.values())
-        groups: dict[str, list[str]] = {}
-        for name in self.tools:
-            verb = _VERB.match(name)
-            groups.setdefault(verb.group(0) if verb else "other", []).append(name)
-        return "\n".join(f"- {verb}: {', '.join(names)}" for verb, names in groups.items())
+            return list(self.tools.values())
+        names = [n for n in self.core if n in self.tools]
+        names += [n for n in sorted(self.uses, key=lambda n: -self.uses[n]) if n in self.tools and n not in names]
+        return [self.tools[n] for n in names[:limit]]
+
+    def index(self) -> str:
+        """The API as it appears in the execute description; bounded however many tools exist."""
+        listed = self.listed()
+        lines = [f"- {self.compact(t)}" for t in listed]
+        rest = [name for name in self.tools if name not in {t.name for t in listed}]
+        if rest:
+            groups: dict[str, list[str]] = {}
+            for name in rest:
+                verb = _VERB.match(name)
+                groups.setdefault(verb.group(0) if verb else "other", []).append(name)
+            lines.append(f"More tools ({len(rest)}); get a signature with `await pendo.help(name)` or `search`:")
+            lines += [f"- {verb}: {', '.join(names)}" for verb, names in groups.items()]
+        return "\n".join(lines)
 
     def search(self, query: str, limit: int = 8) -> list[Tool]:
         wanted = _tokens(query)
