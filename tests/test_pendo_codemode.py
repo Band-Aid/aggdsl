@@ -507,6 +507,22 @@ def test_server_keeps_state_and_recipes_across_execute_calls(tmp_path):
 
 
 @needs_node
+def test_server_log_records_each_search_and_execute(tmp_path):
+    log = tmp_path / "session.jsonl"
+    client = codemode_server("--log", str(log))
+    try:
+        client.call_tool("search", {"query": "segmentList"})
+        client.call_tool("execute", {"code": "return (await pendo.segmentList()).totalCount;", "intent": "count segments"})
+        client.call_tool("execute", {"code": "return nope;"})
+    finally:
+        client.close()
+    entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert [e["kind"] for e in entries] == ["search", "execute", "execute"] and [e.get("ok") for e in entries[1:]] == [True, False]
+    assert entries[1]["calls"][0]["tool"] == "segmentList" and entries[1]["intent"] == "count segments"
+    assert "nope is not defined" in entries[2]["error"]
+
+
+@needs_node
 def test_server_can_opt_in_to_one_write_tool():
     client = codemode_server("--allow-tool", "createSegment", "--default", "subId=sub-9")
     try:

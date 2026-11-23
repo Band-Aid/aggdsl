@@ -176,8 +176,18 @@ def tool_definitions(
     ]
 
 
+def _log(path: str | None, entry: dict[str, Any]) -> None:
+    """Append one JSON line per search or execute, for measuring a session afterwards."""
+    if path:
+        import time
+
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"t": round(time.time(), 3), **entry}, ensure_ascii=False) + "\n")
+
+
 def handle_call(
     name: str, arguments: dict[str, Any], *, catalog: Catalog, client: McpClient, limits: Limits,
+    log_path: str | None = None,
     shapes_path: str | None = None,
     session: dict[str, Any] | None = None,
     recipes: RecipeStore | None = None,
@@ -188,7 +198,9 @@ def handle_call(
         limit = arguments.get("limit")
         limit = limit if isinstance(limit, int) and 0 < limit <= 50 else 8
         detail = arguments.get("detail") if arguments.get("detail") in {"summary", "compact", "full"} else "signature"
-        return text_result(catalog.describe(str(arguments.get("query") or ""), limit, detail))
+        found = catalog.describe(str(arguments.get("query") or ""), limit, detail)
+        _log(log_path, {"kind": "search", "query": arguments.get("query"), "detail": detail, "out_bytes": len(found.encode("utf-8"))})
+        return text_result(found)
     if name == "execute":
         try:
             intent = arguments.get("intent")
@@ -202,6 +214,11 @@ def handle_call(
                 recipes=recipes.code() if recipes else None,
                 lib=lib,
             )
+            _log(log_path, {
+                "kind": "execute", "ok": True, "intent": intent, "code": arguments.get("code"),
+                "out_bytes": output["stats"]["output_bytes"], "elapsed_ms": output["stats"]["elapsed_ms"],
+                "calls": [{k: c[k] for k in ("tool", "ok", "ms", "bytes", "round")} for c in output["calls"]],
+            })
             session["state"] = output.pop("state")
             if session["state"]:
                 output["state"] = describe_state(session["state"])
@@ -217,6 +234,8 @@ def handle_call(
                 del output["logs"]
             return text_result(output)
         except (CodeModeError, McpError, ValueError) as exc:
+            _log(log_path, {"kind": "execute", "ok": False, "code": arguments.get("code"), "error": str(exc)[:500],
+                            "out_bytes": len(str(exc).encode("utf-8"))})
             return text_result(str(exc), is_error=True)
     return text_result(f"Unknown tool: {name}", is_error=True)
 
@@ -240,6 +259,7 @@ def _add_upstream_flags(parser: argparse.ArgumentParser) -> None:
         "--lib", action="store_true",
         help="Also offer lib.*: hand-written helper functions for common Pendo questions (an optional layer)",
     )
+    parser.add_argument("--log", metavar="FILE", help="Append one JSON line per search and execute (programs, sizes, calls)")
     parser.add_argument("--core", metavar="NAMES", help="Comma-separated tools always listed in full on a large server")
     parser.add_argument("--recipes", metavar="DIR", help="Directory of saved programs, callable as recipes.<name>(params)")
     parser.add_argument(
@@ -278,7 +298,7 @@ def serve_main(argv: list[str] | None = None) -> int:
             list_tools=lambda: tool_definitions(catalog, limits, recipes, args.lib),
             call_tool=lambda name, arguments: handle_call(
                 name, arguments, catalog=catalog, client=client, limits=limits, shapes_path=args.shapes,
-                session=session, recipes=recipes, lib=args.lib,
+                session=session, recipes=recipes, lib=args.lib, log_path=args.log,
             ),
         )
     finally:
