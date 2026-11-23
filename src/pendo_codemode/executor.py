@@ -19,6 +19,7 @@ from typing import Any, Protocol
 
 from .catalog import Catalog
 from .mcp_wire import McpClient, unwrap_tool_result
+from . import stdlib
 
 
 class CodeModeError(RuntimeError):
@@ -35,7 +36,7 @@ class Limits:
     max_upstream_bytes: int = 4_000_000  # all tool results of one program
     max_output_bytes: int = 32_000  # what goes back to the model
     max_state_bytes: int = 2_000_000  # session state kept between programs
-    preview_bytes: int = 4_000  # larger results come back as a preview; 0 turns previews off
+    preview_bytes: int = 0  # when set, larger results come back as a preview (off by default)
 
 
 class ToolBackend(Protocol):
@@ -206,7 +207,8 @@ def execute_code(
             pass  # the program already ended
 
     try:
-        send({"type": "start", "code": code, "tools": catalog.names(), "state": state or {}, "recipes": recipes or {}})
+        send({"type": "start", "code": code, "tools": catalog.names(), "state": state or {}, "recipes": recipes or {},
+              "stdlib": stdlib.source()})
         calls = 0
         rounds: dict[Any, int] = {}
         while True:

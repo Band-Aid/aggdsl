@@ -65,6 +65,35 @@ Code Mode is shaped around those facts:
 | `userQuery` telemetry | Hidden from signatures. `execute` takes an `intent` and the host adds it to every call, so Pendo's analytics still see the task. |
 | Fan-out by design | `Promise.all` over the per-entity calls, joined in code. |
 
+## High-level functions (`lib`)
+
+Four cold-start runs showed where a model's tokens go once it writes its own programs:
+reading tool documentation, probing result shapes, and returning data it only needs in
+order to choose an entity. Features that tried to manage that from the outside (learned
+shapes, previews, `full()`) helped little and sometimes misled the model.
+
+`lib` takes the other route. It is a small library that ships with the server and runs
+inside the sandbox on top of the raw tools:
+
+| Function | Replaces |
+| --- | --- |
+| `lib.find(query, opts)` | Searching pages, features and track events and trimming the result |
+| `lib.frustration(opts)` | Four rankings plus one lookup per offending element |
+| `lib.funnel(steps, opts)` | `queryFunnel` and picking the numbers out of its result |
+| `lib.visitors(entity, opts)` | `entityUsage` per visitor |
+| `lib.cohorts({among, did, behaviours})` | One visitor list per entity, intersected in code |
+| `lib.guidePolls(opts)` | Finding guides with polls and one response query per guide |
+
+Each returns a shape this package defines, so the one line shown to the model is exact
+and no trial run is needed. A function is listed only when the upstream has the tools
+it calls. The raw tools stay available for everything else.
+
+Replayed over real responses collected earlier (not a live run), the five functions
+that answer the four benchmark questions returned about 2 KB in total from about 83 KB
+of raw tool results.
+
+Result previews are now off by default (`--preview-bytes` turns them on).
+
 ## Keeping cost flat as Pendo adds tools
 
 Measured with a model writing its own programs (three questions on one app, one

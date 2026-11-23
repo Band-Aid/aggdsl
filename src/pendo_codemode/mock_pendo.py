@@ -97,6 +97,8 @@ def _entity_totals(entity: dict[str, Any], window: tuple[date, date]) -> dict[st
         "uniqueAccounts": sum(1 for e, _v in per_account if e),
         "uniqueVisitors": sum(v for _e, v in per_account),
     }
+    if entity["type"] == "page":  # U-turns exist for pages only, as on the real server
+        row["totalUTurnCount"] = _n("uturn", entity["id"], mod=30)
     if entity["type"] != "trackEvent":
         row["totalRageClickCount"] = _n("rage", entity["id"], mod=40)
         row["totalDeadClickCount"] = _n("dead", entity["id"], mod=25)
@@ -137,6 +139,8 @@ def _aggregate_entity_usage(args: dict[str, Any]) -> dict[str, Any]:
     meta = _meta(window)
     rows = [_entity_totals(e, window) for e in entities]
     sort_by = args.get("sortBy") or "totalEvents"
+    if sort_by == "totalUTurnCount" and args.get("entityType") != "page":
+        raise ValueError(f'sortBy "totalUTurnCount" is not valid for entityType "{args.get("entityType")}"')
     if args.get("compareToDateRange"):
         prior_window = _window(args["compareToDateRange"], before=window)
         meta["compareToDateRange"] = _meta(prior_window)["dateRange"]
@@ -155,6 +159,9 @@ def _aggregate_entity_usage(args: dict[str, Any]) -> dict[str, Any]:
     else:
         rows = [r for r in rows if r["totalEvents"] or args.get("includeUnused")]
     summary = {"totalEvents": sum(r.get("totalEvents", r.get("current_totalEvents", 0)) for r in rows)}
+    for metric in ("totalRageClickCount", "totalDeadClickCount", "totalErrorClickCount", "totalUTurnCount"):
+        if any(metric in r for r in rows):
+            summary[metric] = sum(r.get(metric, 0) for r in rows)
     return {"meta": meta, "summary": summary, "rows": _sorted(rows, sort_by, args.get("sortOrder"))[: int(args.get("limit") or 10)]}
 
 
@@ -162,9 +169,18 @@ def _entity_usage(args: dict[str, Any]) -> dict[str, Any]:
     entity = next((e for e in ENTITIES if e["id"] == args["entityId"] and e["type"] == args["entityType"]), None)
     if entity is None:
         raise ValueError(f"no {args['entityType']} with id {args['entityId']}")
-    if args.get("groupBy", "visitor") != "account":
-        raise ValueError("the mock only implements groupBy='account'")
     window = _window(args["dateRange"])
+    if args.get("groupBy", "visitor") != "account":
+        rows = []
+        for account in ACCOUNTS:
+            events, visitors = _usage(entity, account, window)
+            for index in range(min(visitors, 3)) if events else ():
+                rows.append({"visitorId": f"{account.lower().replace(' ', '-')}-v{index}", "daysActive": 1 + index,
+                             "events": max(1, events // (index + 2)), "timeOnEntityInMinutes": index + 1})
+        summary = {"totalNumAccounts": len({r["visitorId"].rsplit("-v", 1)[0] for r in rows}),
+                   "totalNumEvents": sum(r["events"] for r in rows), "totalNumVisitors": len(rows)}
+        return {"meta": _meta(window), "summary": summary,
+                "rows": _sorted(rows, args.get("sortBy") or "events", args.get("sortOrder"))[: int(args.get("limit") or 10)]}
     rows = []
     for account in ACCOUNTS:
         events, visitors = _usage(entity, account, window)
@@ -276,8 +292,9 @@ def _list_guides(args: dict[str, Any]) -> list[dict[str, Any]]:
         row: dict[str, Any] = {"id": guide["id"], "name": guide["name"], "state": guide["state"],
                                "launchMethod": guide["launchMethod"], "productAreaIds": [], "categoryIds": []}
         if args.get("expand"):
-            row["steps"] = [{"id": f"{guide['id']}-s{i}", "type": "lightbox"} for i in range(guide["steps"])]
-            row["polls"] = [{"id": p["id"], "question": p["question"], "type": p["type"]} for p in POLLS.get(guide["id"], [])]
+            row["steps"] = [{"id": f"{guide['id']}-s{i}", "type": "lightbox", "rank": i} for i in range(guide["steps"])]
+            if guide["id"] in POLLS:  # as on the real server: poll ids hang off the step, and only when expanded
+                row["steps"][0]["pollIds"] = [p["id"] for p in POLLS[guide["id"]]]
         rows.append(row)
     return rows
 
@@ -319,8 +336,11 @@ def _get_entity(args: dict[str, Any]) -> dict[str, Any]:
     if entity is None:
         raise ValueError(f"no {args['entityType']} with id {args['entityId']}")
     found = {"id": entity["id"], "type": entity["type"], "name": entity["name"], "appIds": [entity["appId"]]}
+    if entity["type"] == "page":
+        found["rules"] = [f"//*/{entity['name'].lower().replace(' ', '-')}"]
     if entity["type"] == "feature":
         found["elementPathRules"] = [f"#{entity['name'].lower().replace(' ', '-')}"]
+        found["pageName"] = "Dashboard"
     if "productArea" in entity:
         found["productArea"] = entity["productArea"]
     return found

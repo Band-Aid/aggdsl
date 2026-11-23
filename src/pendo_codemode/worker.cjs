@@ -90,6 +90,7 @@ async function execute(start) {
   const run = (source) => vm.runInContext(source, context, { timeout: 5000, displayErrors: false });
   try {
     run(PRELUDE);
+    if (start.stdlib) run(start.stdlib);  // defines `lib`, built on `pendo`
     // `state` survives between programs of one session; it is plain JSON on both sides.
     context.state = run(`JSON.parse(${JSON.stringify(JSON.stringify(start.state || {}))})`);
     context.recipes = run('Object.create(null)');

@@ -441,7 +441,7 @@ def test_recipe_results_are_what_the_question_asks():
     checklist = polls["result"][1]["polls"]
     assert set(checklist[0]["answers"]) <= {"Yes", "No"} and sum(checklist[0]["answers"].values()) > 0
     assert list(checklist[1]["answers"]) == ["freeText"]  # free-text answers are counted, not returned
-    assert [g["id"] for g in polls["state"]["guidesWithPolls"]] == ["guide-03", "guide-07"]
+    assert polls["state"]["guidesWithPolls"] == ["NPS survey", "Setup checklist"]
     brief = run(read("account_brief"))
     assert brief["result"]["account"] == "Example Co 07" and brief["stats"]["tool_calls"] == 10
     assert len(brief["result"]["topFeatureAdoption"]) == 5
@@ -654,6 +654,50 @@ def test_benchmark_reports_tokens_from_the_supplied_counter():
     # Without a counter the figures are marked as estimates.
     estimate = bench.render([bench.measure(path, **kwargs)], upstream="mock", tool_count=9, runs=1, delay_ms=0)
     assert "Tokens: estimated as bytes / 4." in estimate and "- regular MCP: ~" in estimate
+
+
+# --- high-level library ------------------------------------------------------
+
+
+@needs_node
+def test_lib_functions_return_their_documented_shapes():
+    output = run("""
+const [share] = await lib.find('share', { types: ['feature'] });
+const page = (await lib.find('dashboard', { types: ['page'] }))[0];
+const hot = await lib.frustration({ top: 2 });
+const funnel = await lib.funnel([page, share]);
+const who = await lib.visitors(share);
+const cohorts = await lib.cohorts({ among: page, did: share, behaviours: [{ type: 'feature', id: 'feature-01', name: 'Export CSV' }] });
+return { share, page, hot, funnel, who: { n: who.ids.length, total: who.total, capped: who.capped }, cohorts };
+""")
+    r = output["result"]
+    assert r["share"] == {"type": "feature", "id": "feature-03", "name": "Share Link"}
+    assert r["page"] == {"type": "page", "id": "page-00", "name": "Dashboard"}
+    assert set(r["hot"]) == {"dateRange", "totals", "elements", "pages"} and set(r["hot"]["totals"]) == {"rage", "dead", "error"}
+    element = r["hot"]["elements"][0]
+    assert set(element) == {"signal", "name", "count", "selectors", "page"} and element["selectors"][0].startswith("#")
+    assert set(r["hot"]["pages"][0]) == {"name", "urlRules", "rage", "dead", "uTurns"}
+    assert set(r["funnel"]) == {"visitors", "keptPct", "overallPct", "medianBetween", "medianTotal"}
+    assert len(r["funnel"]["visitors"]) == 2 and r["funnel"]["keptPct"][0] == r["funnel"]["overallPct"]
+    assert r["who"]["n"] == r["who"]["total"] > 0 and r["who"]["capped"] is False
+    c = r["cohorts"]
+    assert c["completers"] > 0 and c["others"] > 0 and set(c["behaviours"][0]) == {"name", "completersPct", "othersPct"}
+    assert all(call["ok"] for call in output["calls"])  # every call the library makes is valid for the real schemas
+
+
+@needs_node
+def test_lib_find_falls_back_to_meaning_and_is_listed_only_when_its_tools_exist():
+    from pendo_codemode import stdlib
+    from pendo_codemode.server import tool_definitions
+
+    backend = MockBackend()
+    run("return await lib.find('zzz-no-such-name', { types: ['page'] });", backend=backend)
+    assert [args["searchType"] for _name, args in backend.calls] == ["substring", "semantic"]
+    description = tool_definitions(mock_catalog(), Limits())[1]["description"]
+    assert description.index("High-level functions") < description.index("Raw tools")
+    assert "- lib.funnel(steps, {appId?, days?}) → {visitors[], keptPct[]" in description
+    assert stdlib.available({"queryFunnel"}) == [stdlib.FUNCTIONS["funnel"][1]]
+    assert stdlib.available(set()) == []
 
 
 # --- generated file tree -----------------------------------------------------

@@ -17,6 +17,7 @@ from typing import Any
 
 from .catalog import Catalog, Tool
 from .executor import CodeModeError, Limits, McpBackend, execute_code
+from . import stdlib
 from .recipes import RecipeStore
 from .mcp_wire import HttpTransport, McpClient, McpError, StdioTransport, serve_stdio, text_result
 
@@ -90,32 +91,30 @@ def build_catalog(client: McpClient, args: argparse.Namespace) -> Catalog:
 
 def tool_definitions(catalog: Catalog, limits: Limits, recipes: RecipeStore | None = None) -> list[dict[str, Any]]:
     saved = recipes.index() if recipes else ""
+    functions = stdlib.available(set(catalog.tools))
     execute_description = (
-        "Run a JavaScript program against Pendo. Each Pendo tool is an async function: "
-        "`await pendo.<tool>(args)` takes the tool's arguments object and resolves to its parsed JSON "
-        "result (it rejects if the tool fails). Chain calls, use Promise.all for independent calls, "
-        "filter/join/aggregate in code, and `return` only the small JSON the answer needs: intermediate "
-        "results never enter the conversation. console.log output is returned as `logs`. "
+        "Run a JavaScript program against Pendo and get back only what it returns. The program is the body of an "
+        "async function; use `await`, `Promise.all` for independent calls, and `return` a small JSON answer. "
+        "Intermediate data never enters the conversation, so filter, join and aggregate in code. "
         f"Limits: {limits.max_calls} tool calls, {int(limits.timeout_seconds)}s, "
-        f"{limits.max_output_bytes // 1000} KB returned. No network, files or imports. "
-        "The list below gives each tool's argument names (? = optional) and, after →, the shape of what it "
-        "returns when known. Call `search` with a tool name for argument types and notes when the list is not "
-        "enough; `await pendo.help(name)` returns the same from inside a program. Never guess a result shape: "
-        "when it is not shown, look at it with a small program first."
+        f"{limits.max_output_bytes // 1000} KB returned. No network, files or imports."
         + (f" Pre-set arguments you may omit: {', '.join(catalog.defaults)}." if catalog.defaults else "")
-        + " `state` is an object that persists between your programs in this session: put ids, lookups and "
-        "bulky intermediate data there (state.x = ...) instead of returning them, and read them back in the "
-        "next program; each result lists what is stored. `table(rows)` returns rows as {columns, rows} to "
-        "avoid repeating keys."
+        + " `state` is an object that persists between your programs: keep ids and intermediate data there "
+        "instead of returning them."
         + (
-            f" A result over {limits.preview_bytes // 1000} KB comes back as a preview (the first items of each "
-            "list) and the full value is kept in `state.last`: narrow it in the next program, for example "
-            "state.last.rows.filter(...), or `return full(value)` if you really must read all of it. Prefer a "
-            "tool's own search and limit arguments over fetching everything."
+            f" A result over {limits.preview_bytes // 1000} KB comes back as a preview with the full value in "
+            "`state.last`; `return full(value)` overrides that."
             if limits.preview_bytes else ""
         )
         + (" `await recipes.<name>(params)` runs a saved program." if recipes else "")
-        + "\n\nTools:\n" + catalog.index()
+        + (
+            "\n\nHigh-level functions. Use these first: each makes the tool calls a common question needs and "
+            "returns exactly the shape shown.\n" + "\n".join(f"- {line}" for line in functions)
+            if functions else ""
+        )
+        + "\n\nRaw tools, as `await pendo.<tool>(args)` (? = optional; → shows the result when it has been "
+        "observed, and which arguments it was observed with). For argument details call `search` with the tool "
+        "name, or `await pendo.help(name)` inside a program.\n" + catalog.index()
         + (f"\n\nSaved recipes:\n{saved}" if saved else "")
     )
     return [
@@ -227,7 +226,7 @@ def _add_upstream_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--core", metavar="NAMES", help="Comma-separated tools always listed in full on a large server")
     parser.add_argument("--recipes", metavar="DIR", help="Directory of saved programs, callable as recipes.<name>(params)")
     parser.add_argument(
-        "--preview-bytes", type=int, default=4000,
+        "--preview-bytes", type=int, default=0,
         help="Results larger than this come back as a preview with the full value in state.last (0 = off)",
     )
     parser.add_argument("--timeout", type=float, default=60.0, help="Total seconds per program")
