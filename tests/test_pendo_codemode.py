@@ -599,3 +599,36 @@ def test_benchmark_reports_tokens_from_the_supplied_counter():
     # Without a counter the figures are marked as estimates.
     estimate = bench.render([bench.measure(path, **kwargs)], upstream="mock", tool_count=9, runs=1, delay_ms=0)
     assert "Tokens: estimated as bytes / 4." in estimate and "- regular MCP: ~" in estimate
+
+
+# --- generated file tree -----------------------------------------------------
+
+
+def test_generate_writes_one_typed_file_per_tool(tmp_path):
+    from pendo_codemode.generate import write_tree
+    from pendo_codemode.recipes import RecipeStore
+
+    catalog = mock_catalog()
+    catalog.observe("segmentList", {"totalCount": 1, "segments": [{"id": "s", "name": "n"}]})
+    store = RecipeStore(tmp_path / "saved")
+    store.save("topFeature", "Most-used feature", "return 1;")
+    summary = write_tree(catalog, tmp_path / "out", recipes=store)
+    pendo = tmp_path / "out" / "servers" / "pendo"
+    assert summary["tools"] == len(catalog.tools) and summary["recipes"] == 1
+    assert sorted(p.stem for p in pendo.glob("*.ts")) == sorted([*catalog.tools, "index", "types"])
+    segment = (pendo / "segmentList.ts").read_text(encoding="utf-8")
+    assert "export interface SegmentListInput {" in segment and "userQuery" not in segment
+    assert "export type SegmentListResponse = {totalCount: number, segments: {id: string, name: string}[]};" in segment
+    assert 'return callMCPTool<SegmentListResponse>("segmentList", input);' in segment
+    assert "export async function segmentList(input: SegmentListInput = {})" in segment  # nothing required once subId is pre-set
+    funnel = (pendo / "queryFunnel.ts").read_text(encoding="utf-8")
+    assert 'import type { DateRange } from "./types.js";' in funnel and "export type QueryFunnelResponse = unknown;" in funnel
+    assert "export async function queryFunnel(input: QueryFunnelInput): Promise" in funnel
+    assert "export type DateRange = {" in (pendo / "types.ts").read_text(encoding="utf-8")
+    index = (pendo / "index.ts").read_text(encoding="utf-8")
+    assert 'export * from "./segmentList.js";' in index and "→ {totalCount, segments: [{id, name}]}" in index
+    # Browsing costs the index plus the files actually opened, not every definition.
+    assert summary["index_bytes"] + summary["largest"] < summary["tool_file_bytes"] / 2
+    skill = (tmp_path / "out" / "skills" / "pendo-analytics" / "SKILL.md").read_text(encoding="utf-8")
+    assert skill.startswith("---\nname: pendo-analytics\n") and "- `topFeature.js`: Most-used feature" in skill
+    assert "createSegment" not in index  # write tools stay out of the tree too

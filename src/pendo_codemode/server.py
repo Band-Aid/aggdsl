@@ -280,7 +280,9 @@ def cli_main(argv: list[str] | None = None) -> int:
     bench.add_argument("--tokens", action="store_true", help="Exact token counts from the Anthropic API")
     bench.add_argument("--token-model", default="claude-opus-5-5", help="Model whose tokenizer is used with --tokens")
     bench.add_argument("--json", action="store_true", help="Print raw measurements instead of a table")
-    for command in (run, tools, bench):
+    generate = sub.add_parser("generate", help="Write the tools as a browsable tree of typed files (servers/pendo/*.ts)")
+    generate.add_argument("out", help="Directory to write into")
+    for command in (run, tools, bench, generate):
         _add_upstream_flags(command)
     args = parser.parse_args(argv)
     try:
@@ -294,6 +296,12 @@ def cli_main(argv: list[str] | None = None) -> int:
             print(catalog.describe(args.query, 200 if not args.query else 8, args.detail))
             if catalog.blocked:
                 print(f"\n// hidden (not read-only): {', '.join(catalog.blocked)}")
+            return 0
+        if args.action == "generate":
+            from .generate import write_tree
+
+            summary = write_tree(catalog, args.out, recipes=RecipeStore(args.recipes) if args.recipes else None)
+            print(json.dumps(summary))
             return 0
         if args.action == "bench":
             from . import bench as benchmark

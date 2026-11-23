@@ -116,6 +116,31 @@ What this repo cannot fix, and Pendo's server can: published output schemas, bat
 forms of the per-entity tools (one program needed 22 `entityUsage` calls), and running
 programs next to the aggregation engine to remove round trips.
 
+## Tools as a file tree
+
+```bash
+pendo-code generate ./pendo-api --default subId=<id> --shapes shapes.json --recipes ./recipes
+```
+
+writes the catalog the way Anthropic's "Code execution with MCP" article describes it:
+
+```
+pendo-api/
+  client.ts                     callMCPTool, supplied by the host
+  servers/pendo/index.ts        one line per tool
+  servers/pendo/<tool>.ts       typed input, learned response type, wrapper function
+  servers/pendo/types.ts        shared types such as DateRange
+  skills/pendo-analytics/       SKILL.md plus each saved recipe
+```
+
+An agent that has a filesystem (Claude Code, for example) lists the directory and opens
+only the files it needs, so no tool definition is loaded up front. For the 14 mock tools
+the index is 6.2 KB and all tool files together 27.8 KB. The response types are the
+learned shapes; a tool that has never been called is typed `unknown`.
+
+This is generated output only. Nothing in this repo runs those TypeScript files, and
+they have not been compiled or tried with an agent.
+
 ## Recipes
 
 [`examples/pendo_code_mode/`](../examples/pendo_code_mode/) holds four programs written
