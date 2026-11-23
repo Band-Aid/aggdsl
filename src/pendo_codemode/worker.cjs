@@ -57,6 +57,8 @@ function makeApi(tools) {
   return new Proxy(Object.create(null), {
     get(_target, name) {
       if (typeof name !== 'string' || name === 'then') return undefined;
+      // pendo.help('toolName' | 'keywords') resolves to signatures; pendo.help() to the index.
+      if (name === 'help' && !known.has('help')) return (topic) => call('$help')({ topic: topic === undefined ? '' : String(topic) });
       if (!known.has(name)) {
         throw new Error(`Unknown Pendo tool "${name}". Available: ${tools.join(', ')}`);
       }

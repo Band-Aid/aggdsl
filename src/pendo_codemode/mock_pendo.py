@@ -493,6 +493,7 @@ TOOLS: list[tuple[dict[str, Any], Any]] = [
            "- Timestamp fields (startTime, endTime) are raw Unix epoch milliseconds; each has a *Display sibling.",
            {"subId": _SUB, "startDate": _d(_S, "Query start date in YYYY-MM-DD format. Inclusive."),
             "endDate": _d(_S, "Query end date in YYYY-MM-DD format. Inclusive."),
+            "appId": _d(_STRINGS, "Filter results to specific app IDs (an array). If omitted, all replay-enabled apps."),
             "frustrationTypes": {"type": "array", "description": "Filter to sessions matching frustration signal criteria; "
                                  "entries are combined with AND.",
                                  "items": {"type": "object", "required": ["frustrationType", "fact"], "properties": {

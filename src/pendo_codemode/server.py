@@ -59,7 +59,10 @@ def build_catalog(client: McpClient, args: argparse.Namespace) -> Catalog:
         defaults[key] = value
     if args.mock:
         defaults.setdefault("subId", "mock-sub")
-    return Catalog(tools, allow_writes=args.allow_writes, allow_tools=args.allow_tool, defaults=defaults)
+    catalog = Catalog(tools, allow_writes=args.allow_writes, allow_tools=args.allow_tool, defaults=defaults)
+    if args.shapes:
+        catalog.load_shapes(args.shapes)
+    return catalog
 
 
 def tool_definitions(catalog: Catalog, limits: Limits) -> list[dict[str, Any]]:
@@ -71,7 +74,10 @@ def tool_definitions(catalog: Catalog, limits: Limits) -> list[dict[str, Any]]:
         "results never enter the conversation. console.log output is returned as `logs`. "
         f"Limits: {limits.max_calls} tool calls, {int(limits.timeout_seconds)}s, "
         f"{limits.max_output_bytes // 1000} KB returned. No network, files or imports. "
-        "ALWAYS call `search` for a tool's arguments and result shape before using it; never guess them."
+        "The list below gives each tool's argument names (? = optional) and, after →, the shape of what it "
+        "returns when known. Call `search` with a tool name for argument types and notes when the list is not "
+        "enough; `await pendo.help(name)` returns the same from inside a program. Never guess a result shape: "
+        "when it is not shown, look at it with a small program first."
         + (f" Pre-set arguments you may omit: {', '.join(catalog.defaults)}." if catalog.defaults else "")
         + "\n\nTools:\n" + catalog.index()
     )
@@ -90,8 +96,8 @@ def tool_definitions(catalog: Catalog, limits: Limits) -> list[dict[str, Any]]:
                     "limit": {"type": "integer", "description": "Maximum tools to return (default 8)"},
                     "detail": {
                         "type": "string",
-                        "enum": ["summary", "signature", "full"],
-                        "description": "summary: one line each; signature (default): arguments and returns; full: everything",
+                        "enum": ["summary", "compact", "signature", "full"],
+                        "description": "summary or compact: one line each; signature (default): arguments and returns; full: everything",
                     },
                 },
             },
@@ -117,11 +123,14 @@ def tool_definitions(catalog: Catalog, limits: Limits) -> list[dict[str, Any]]:
     ]
 
 
-def handle_call(name: str, arguments: dict[str, Any], *, catalog: Catalog, client: McpClient, limits: Limits) -> dict[str, Any]:
+def handle_call(
+    name: str, arguments: dict[str, Any], *, catalog: Catalog, client: McpClient, limits: Limits,
+    shapes_path: str | None = None,
+) -> dict[str, Any]:
     if name == "search":
         limit = arguments.get("limit")
         limit = limit if isinstance(limit, int) and 0 < limit <= 50 else 8
-        detail = arguments.get("detail") if arguments.get("detail") in {"summary", "full"} else "signature"
+        detail = arguments.get("detail") if arguments.get("detail") in {"summary", "compact", "full"} else "signature"
         return text_result(catalog.describe(str(arguments.get("query") or ""), limit, detail))
     if name == "execute":
         try:
@@ -133,6 +142,8 @@ def handle_call(name: str, arguments: dict[str, Any], *, catalog: Catalog, clien
                 limits=limits,
                 intent=intent if isinstance(intent, str) else None,
             )
+            if shapes_path:
+                catalog.save_shapes(shapes_path)
             # The per-call trace is for humans at the CLI; the model only needs the answer.
             del output["calls"]
             if not output["logs"]:
@@ -153,6 +164,10 @@ def _add_upstream_flags(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--default", action="append", default=[], metavar="NAME=VALUE", help="Pre-set an argument, e.g. subId=123"
+    )
+    parser.add_argument(
+        "--shapes", metavar="FILE",
+        help="Remember the structure of each tool's results here (key names and types only) and show it in signatures",
     )
     parser.add_argument("--timeout", type=float, default=60.0, help="Total seconds per program")
     parser.add_argument("--max-calls", type=int, default=25, help="Tool calls per program")
@@ -183,7 +198,7 @@ def serve_main(argv: list[str] | None = None) -> int:
             instructions=INSTRUCTIONS,
             list_tools=lambda: tool_definitions(catalog, limits),
             call_tool=lambda name, arguments: handle_call(
-                name, arguments, catalog=catalog, client=client, limits=limits
+                name, arguments, catalog=catalog, client=client, limits=limits, shapes_path=args.shapes
             ),
         )
     finally:
@@ -198,7 +213,7 @@ def cli_main(argv: list[str] | None = None) -> int:
     run.add_argument("file", nargs="?", help="JavaScript file; reads standard input if omitted")
     tools = sub.add_parser("tools", help="Print tool signatures as the model would see them")
     tools.add_argument("query", nargs="?", default="")
-    tools.add_argument("--detail", choices=["summary", "signature", "full"], default="signature")
+    tools.add_argument("--detail", choices=["summary", "compact", "signature", "full"], default="signature")
     run.add_argument("--intent", help="One-line task summary forwarded to Pendo as userQuery")
     bench = sub.add_parser("bench", help="Compare regular MCP calls with Code Mode (read-only)")
     bench.add_argument("files", nargs="+", help="JavaScript programs to measure")
@@ -278,6 +293,8 @@ def cli_main(argv: list[str] | None = None) -> int:
             limits=Limits(timeout_seconds=args.timeout, max_calls=args.max_calls),
             intent=args.intent,
         )
+        if args.shapes:
+            catalog.save_shapes(args.shapes)
     except (CodeModeError, McpError, OSError, RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

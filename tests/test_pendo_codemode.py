@@ -115,13 +115,52 @@ def test_search_ranks_name_matches_and_splits_camel_case():
 
 def test_index_stays_small_for_a_server_with_many_tools():
     small = mock_catalog().index()
-    assert "- pendo.appUsage: Get per-visitor or per-account app usage metrics for a date range." in small
+    assert "- pendo.segmentList({substring?, offset?})  // List or search the subscription's segments." in small
+    assert "- pendo.entityUsage({entityType, entityId, dateRange, groupBy?" in small  # required arguments first
     read = {"readOnlyHint": True}
     many = Catalog(Tool.from_mcp({"name": f"{verb}Thing{i}", "description": "x" * 5000, "annotations": read})
                    for verb in ("list", "get", "query") for i in range(45))
     index = many.index()
     assert index.splitlines()[0].startswith("- list: listThing0, listThing1,")
     assert len(index.splitlines()) == 3 and len(index) < 3000
+
+
+def test_observed_result_shapes_describe_structure_without_data():
+    from pendo_codemode.catalog import shape_of
+
+    value = {"meta": {"hasMore": True}, "rows": [{"accountId": "Acme", "events": 3, "note": None},
+                                                   {"accountId": "Beta", "events": 5, "note": "x", "extra": 1.5}]}
+    shape = shape_of(value)
+    assert shape == "{meta: {hasMore: boolean}, rows: {accountId: string, events: number, note: string, extra?: number}[]}"
+    assert "Acme" not in shape
+    assert shape_of([{"requestId": "r", "rows": []}]) == "{requestId: string, rows: unknown[]}[]"
+    catalog = mock_catalog()
+    catalog.observe("entityUsage", value)
+    catalog.observe("entityUsage", {"rows": []})  # a poorer sample does not replace a richer one
+    catalog.observe("notATool", value)
+    assert catalog.shapes == {"entityUsage": shape}
+    assert f" * RESULT SHAPE (observed): {shape}" in catalog.signature(catalog.tools["entityUsage"])
+    assert catalog.compact(catalog.tools["entityUsage"]).endswith("}) → {meta: {hasMore}, rows: [{accountId, events, note, extra}]}")
+
+
+@needs_node
+def test_running_a_program_teaches_the_catalog_result_shapes(tmp_path):
+    catalog = mock_catalog()
+    assert "→" not in catalog.index()
+    run("return (await pendo.segmentList()).totalCount;", catalog=catalog)
+    assert "- pendo.segmentList({substring?, offset?}) → {totalCount, offset, returned, segments: [{id, name}]}" in catalog.index()
+    path = tmp_path / "shapes.json"
+    catalog.save_shapes(path)
+    fresh = mock_catalog()
+    fresh.load_shapes(path)
+    assert fresh.shapes == catalog.shapes
+
+
+@needs_node
+def test_help_is_available_inside_a_program_and_costs_no_tool_call():
+    output = run("const doc = await pendo.help('segmentList'); const all = await pendo.help(); return [doc.includes('pendo.segmentList(args'), all.includes('pendo.appUsage')];")
+    assert output["result"] == [True, True]
+    assert output["stats"]["tool_calls"] == 0
 
 
 def test_unwrap_prefers_structured_content_then_json_text():
@@ -297,7 +336,7 @@ def test_server_exposes_two_tools_over_a_real_mcp_chain():
     try:
         tools = {tool["name"]: tool for tool in client.list_tools()}
         assert sorted(tools) == ["execute", "search"]
-        assert "- pendo.entityUsage: Get usage analytics for one known page" in tools["execute"]["description"]
+        assert "- pendo.entityUsage({entityType, entityId, dateRange, groupBy?" in tools["execute"]["description"]
         assert "Pre-set arguments you may omit: subId." in tools["execute"]["description"]
         assert "createSegment" not in tools["execute"]["description"]
         assert tools["execute"]["annotations"] == {"readOnlyHint": True}

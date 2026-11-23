@@ -126,6 +126,55 @@ def ts_type(schema: Any, depth: int = 0, shared: Mapping[str, str] | None = None
     )
 
 
+def shape_of(value: Any, depth: int = 0) -> str:
+    """Describe a JSON value's structure compactly: key names and types, no data."""
+    if isinstance(value, dict):
+        if depth > 3:
+            return "{…}"
+        parts = [f"{_key(k)}: {shape_of(v, depth + 1)}" for k, v in list(value.items())[:14]]
+        return "{" + ", ".join(parts + (["…"] if len(value) > 14 else [])) + "}"
+    if isinstance(value, list):
+        if not value:
+            return "unknown[]"
+        items = value[:5]
+        if all(isinstance(item, dict) for item in items):
+            merged: dict[str, Any] = {}
+            for item in items:
+                for key, inner in item.items():
+                    if merged.get(key) is None:
+                        merged[key] = inner  # prefer a non-null sample of each field
+            common = set.intersection(*(set(item) for item in items))
+            body = shape_of({(k if k in common else f"{k}?"): v for k, v in merged.items()}, depth)
+            return body.replace('"', "") + "[]" if depth <= 3 else "{…}[]"
+        return shape_of(items[0], depth + 1) + "[]"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    return "null" if value is None else "string"
+
+
+def brief_shape(value: Any, depth: int = 0) -> str:
+    """Key names only, for one-line listings: {summary: {total}, rows: [{id, name}]}."""
+    if isinstance(value, list):
+        dicts = [item for item in value[:5] if isinstance(item, dict)]
+        if not dicts:
+            return "[]"
+        merged: dict[str, Any] = {}
+        for item in dicts:
+            for key, inner in item.items():
+                if merged.get(key) is None:
+                    merged[key] = inner
+        return "[" + brief_shape(merged, depth) + "]"
+    if not isinstance(value, dict):
+        return ""
+    parts = []
+    for key, inner in list(value.items())[:24]:
+        nested = brief_shape(inner, depth + 1) if depth < 2 and isinstance(inner, (dict, list)) else ""
+        parts.append(f"{_key(key)}: {nested}" if nested not in ("", "[]") else (f"{_key(key)}[]" if nested == "[]" else _key(key)))
+    return "{" + ", ".join(parts) + "}"
+
+
 def _tokens(text: str) -> set[str]:
     # Split camelCase and snake_case so "activity" finds activityQuery; fold plurals.
     spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
@@ -155,6 +204,33 @@ class Catalog:
             else:
                 self.blocked.append(tool.name)
         self.shared = self._find_shared_types()
+        # Result shapes seen in real calls. Pendo's tools publish no output schema, so this
+        # is how a program learns what a tool returns without a trial run.
+        self.shapes: dict[str, str] = {}
+        self.briefs: dict[str, str] = {}
+
+    def observe(self, name: str, value: Any) -> None:
+        """Remember the structure of a tool's result (structure only, never data)."""
+        shape = shape_of(value)
+        if name in self.tools and len(shape) > len(self.shapes.get(name, "")):
+            self.shapes[name] = shape
+            self.briefs[name] = brief_shape(value)
+
+    def load_shapes(self, path: Any) -> None:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                stored = json.load(handle)
+        except (OSError, ValueError):
+            return
+        for name, entry in stored.items():
+            if name in self.tools and isinstance(entry, dict) and isinstance(entry.get("shape"), str):
+                self.shapes[name] = entry["shape"]
+                self.briefs[name] = str(entry.get("brief") or "")
+
+    def save_shapes(self, path: Any) -> None:
+        with open(path, "w", encoding="utf-8") as handle:
+            stored = {name: {"shape": shape, "brief": self.briefs.get(name, "")} for name, shape in self.shapes.items()}
+            json.dump(stored, handle, ensure_ascii=False, indent=1, sort_keys=True)
 
     # -- shared parameter types ------------------------------------------------
 
@@ -207,6 +283,8 @@ class Catalog:
         for heading, body in sections.items():
             if heading and (full or heading == "RETURNS"):
                 doc.append(f"{heading}: {_squash(body, 6000 if full else 900)}")
+        if tool.name in self.shapes:
+            doc.append(f"RESULT SHAPE (observed): {_squash(self.shapes[tool.name], 6000 if full else 900)}")
         lines = ["/**"] + [f" * {line}" for line in doc] + [" */"] if doc else []
         returns = ts_type(tool.output_schema) if tool.output_schema else "unknown"
         visible = {k: v for k, v in tool.properties.items() if k != INTENT_PARAM}
@@ -215,7 +293,7 @@ class Catalog:
             return "\n".join(lines)
         schema = {**tool.input_schema, "properties": visible}
         lines.append(f"{tool.accessor}(args: {{")
-        lines.extend(self._fields(schema, 1000 if full else 140, optional=set(self.defaults)))
+        lines.extend(self._fields(schema, 1000 if full else 200, optional=set(self.defaults)))
         lines.append(f"}}): Promise<{returns}>")
         return "\n".join(lines)
 
@@ -233,10 +311,20 @@ class Catalog:
     def names(self) -> list[str]:
         return list(self.tools)
 
+    def compact(self, tool: Tool) -> str:
+        """One line: argument names (optional ones marked ?) and what comes back."""
+        required = set(tool.input_schema.get("required") or []) - set(self.defaults)
+        names = [k for k in tool.properties if k != INTENT_PARAM and k not in self.defaults]
+        names.sort(key=lambda k: k not in required)
+        args = ", ".join(k if k in required else f"{k}?" for k in names)
+        returns = self.briefs.get(tool.name)
+        tail = f" → {_squash(returns, 520)}" if returns else f"  // {_squash(tool.summary, 110)}"
+        return f"{tool.accessor}({{{args}}}){tail}"
+
     def index(self) -> str:
         """Every tool, small enough to live in a tool description."""
         if len(self.tools) <= 25:
-            return "\n".join(f"- {t.accessor}: {t.summary}" for t in self.tools.values())
+            return "\n".join(f"- {self.compact(t)}" for t in self.tools.values())
         groups: dict[str, list[str]] = {}
         for name in self.tools:
             verb = _VERB.match(name)
@@ -268,6 +356,8 @@ class Catalog:
             return f"No Pendo tool matches {query!r}. Available tools:\n{self.index()}"
         if detail == "summary":
             return "\n".join(f"- {t.accessor}: {t.summary}" for t in matches)
+        if detail == "compact":
+            return "\n".join(f"- {self.compact(t)}" for t in matches)
         body = "\n\n".join(self.signature(tool, detail) for tool in matches)
         shared = self._shared_block(body)
         return f"{body}\n\n// shared types\n{shared}" if shared else body

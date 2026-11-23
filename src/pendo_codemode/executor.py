@@ -150,6 +150,7 @@ def execute_code(
             if over:
                 raise CodeModeError("Combined tool results too large; narrow the queries")
             entry["ok"] = True
+            catalog.observe(tool, value)
             reply["value"] = value
         except Exception as exc:
             # JavaScript may catch a failed call; a failure never becomes fake data.
@@ -184,6 +185,11 @@ def execute_code(
                 tool, args, call_id = message.get("tool"), message.get("args"), message.get("id")
                 if not isinstance(call_id, int) or not isinstance(tool, str) or not isinstance(args, dict):
                     raise CodeModeError("Malformed JavaScript bridge request")
+                if tool == "$help":
+                    # Documentation from inside a program; free, and never reaches Pendo.
+                    topic = str(args.get("topic") or "")
+                    send({"type": "result", "id": call_id, "value": catalog.describe(topic, 4) if topic else catalog.index()})
+                    continue
                 if tool not in catalog.tools:
                     # Checked here, not only in the worker: the worker is not trusted.
                     send({"type": "result", "id": call_id, "error": f"Tool {tool} is not available in Code Mode"})
