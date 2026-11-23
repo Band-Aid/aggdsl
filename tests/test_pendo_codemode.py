@@ -106,7 +106,8 @@ def test_only_read_only_tools_are_exposed_by_default():
 def test_search_ranks_name_matches_and_splits_camel_case():
     catalog = mock_catalog()
     assert catalog.search("guide effectiveness")[0].name == "guideEffectivenessMetrics"
-    assert catalog.search("listAccounts")[0].name == "listAccounts"
+    assert [t.name for t in catalog.search("listAccounts")] == ["listAccounts"]  # exact name: that tool only
+    assert [t.name for t in catalog.search("getentity")] == ["getEntity"]
     assert catalog.search("segments")[0].name == "segmentList"
     assert "No Pendo tool matches" in catalog.describe("zzzz")
     assert catalog.describe("segments", limit=1, detail="summary") == "- pendo.segmentList: List or search the subscription's segments."

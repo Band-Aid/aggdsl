@@ -247,6 +247,10 @@ class Catalog:
         wanted = _tokens(query)
         if not wanted:
             return list(self.tools.values())[:limit]
+        # An exact tool name is a lookup, not a search: return that tool alone.
+        exact = [t for t in self.tools.values() if t.name.lower() == query.strip().lower()]
+        if exact:
+            return exact
         scored = []
         for position, tool in enumerate(self.tools.values()):
             name, text = _tokens(tool.name), _tokens(tool.description)
