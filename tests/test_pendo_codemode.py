@@ -691,11 +691,20 @@ def test_lib_find_falls_back_to_meaning_and_is_listed_only_when_its_tools_exist(
     from pendo_codemode.server import tool_definitions
 
     backend = MockBackend()
-    run("return await lib.find('zzz-no-such-name', { types: ['page'] });", backend=backend)
-    assert [args["searchType"] for _name, args in backend.calls] == ["substring", "semantic"]
+    output = run("""
+const names = ['share', 'export', 'widget', 'invite', 'bulk', 'filter'];
+const found = await Promise.all(names.map((n) => lib.find(n, { types: ['feature'] })));
+const none = await lib.find('zzz-no-such-name', { types: ['feature'] });
+return { hits: found.map((f) => f[0].name), none: none.length, cached: state.catalog.all.feature.length };
+""", backend=backend)
+    assert output["result"]["hits"] == ["Share Link", "Export CSV", "Add Widget", "Invite Teammate", "Bulk Edit", "Filter Results"]
+    # Six lookups cost one catalog call; only the miss goes back to Pendo, for a search by meaning.
+    assert [args.get("searchType") for _name, args in backend.calls] == [None, "semantic"]
+    assert output["result"]["cached"] == 10 and "catalog" in output["state"]
     description = tool_definitions(mock_catalog(), Limits())[1]["description"]
     assert description.index("High-level functions") < description.index("Raw tools")
-    assert "- lib.funnel(steps, {appId?, days?}) → {visitors[], keptPct[]" in description
+    assert "- lib.funnel(steps, {appId?, days?}) → {visitors[], keptPct[]" in description and "2 calls + 1 per behaviour" in description
+    assert "dateRange is {type: 'relative', lastNDays: N}" in description
     assert stdlib.available({"queryFunnel"}) == [stdlib.FUNCTIONS["funnel"][1]]
     assert stdlib.available(set()) == []
 

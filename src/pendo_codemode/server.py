@@ -112,9 +112,18 @@ def tool_definitions(catalog: Catalog, limits: Limits, recipes: RecipeStore | No
             "returns exactly the shape shown.\n" + "\n".join(f"- {line}" for line in functions)
             if functions else ""
         )
+        + (
+            "\n\nEvery call a function makes counts toward the tool-call limit; the cost is given after each one."
+            if functions else ""
+        )
         + "\n\nRaw tools, as `await pendo.<tool>(args)` (? = optional; → shows the result when it has been "
         "observed). For argument details call `search` with the tool "
-        "name, or `await pendo.help(name)` inside a program.\n" + catalog.index()
+        "name, or `await pendo.help(name)` inside a program."
+        + (
+            " dateRange is {type: 'relative', lastNDays: N} or {type: 'absolute', startDate, endDate}."
+            if any("dateRange" in t.properties for t in catalog.tools.values()) else ""
+        )
+        + "\n" + catalog.index()
         + (f"\n\nSaved recipes:\n{saved}" if saved else "")
     )
     return [

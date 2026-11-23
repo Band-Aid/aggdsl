@@ -92,6 +92,20 @@ Replayed over real responses collected earlier (not a live run), the five functi
 that answer the four benchmark questions returned about 2 KB in total from about 83 KB
 of raw tool results.
 
+A fifth cold-start run, the first with `lib` (four questions, one run each, tokens
+estimated as bytes / 4):
+
+| | Regular MCP | Code Mode before `lib` | Code Mode with `lib` |
+| --- | --- | --- | --- |
+| Conversation tokens | ~25,800 | ~12,600 | ~5,900 |
+| Model tool calls | 28 | 9 | 8 |
+| Searches or help reads | - | 2 help programs | 0 |
+
+Two of the eight programs failed on the 25-call limit, because the listing did not
+say how many calls each function makes (a loop over `lib.find`, and `lib.cohorts` with
+40 behaviours). The listing now gives each function's call cost, and `lib.find`
+matches names against a catalog fetched once, so repeated lookups are free.
+
 Result previews are now off by default (`--preview-bytes` turns them on).
 
 ## Keeping cost flat as Pendo adds tools

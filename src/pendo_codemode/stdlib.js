@@ -6,19 +6,40 @@ const lib = (() => {
   const pct = (part, whole) => (whole ? Math.round((1000 * part) / whole) / 10 : null);
   const app = (appId) => (appId ? { appId: String(appId) } : {});
   const kindOf = (entity) => entity.kind || entity.type;
+  const loading = {};
+
+  // The names of an app's pages, features and track events, fetched once and kept in state,
+  // so that looking for several things costs no further tool calls.
+  async function catalog({ appId, types = ['page', 'feature', 'trackEvent'] } = {}) {
+    state.catalog = state.catalog || {};
+    const slot = (state.catalog[appId || 'all'] = state.catalog[appId || 'all'] || {});
+    await Promise.all(
+      types.filter((type) => !slot[type]).map((type) => {
+        // Lookups issued together share one request per type.
+        const key = `${appId || 'all'}:${type}`;
+        loading[key] = loading[key] || pendo.listPagesFeaturesAndEvents({ ...app(appId), type, limit: 500 }).then((rows) => {
+          slot[type] = rows.map((e) => ({ type, id: e.id, name: e.name, ...(e.pageId ? { pageId: e.pageId } : {}) }));
+        });
+        return loading[key];
+      })
+    );
+    return types.flatMap((type) => slot[type]);
+  }
 
   async function find(query, { appId, types = ['page', 'feature', 'trackEvent'], limit = 8, match = 'auto' } = {}) {
-    const run = (searchType) =>
-      Promise.all(
-        types.map((type) =>
-          pendo
-            .listPagesFeaturesAndEvents({ ...app(appId), type, search: query, searchType, limit })
-            .then((rows) => rows.map((e) => ({ type, id: e.id, name: e.name, ...(e.pageId ? { pageId: e.pageId } : {}) })))
-        )
-      ).then((lists) => lists.flat());
-    if (match !== 'auto') return run(match);
-    const byName = await run('substring');
-    return byName.length ? byName : run('semantic');
+    if (match !== 'semantic') {
+      const needle = String(query).toLowerCase();
+      const byName = (await catalog({ appId, types })).filter((e) => e.name.toLowerCase().includes(needle));
+      if (byName.length || match === 'substring') return byName.slice(0, limit * types.length);
+    }
+    const lists = await Promise.all(
+      types.map((type) =>
+        pendo
+          .listPagesFeaturesAndEvents({ ...app(appId), type, search: query, searchType: 'semantic', limit })
+          .then((rows) => rows.map((e) => ({ type, id: e.id, name: e.name, ...(e.pageId ? { pageId: e.pageId } : {}) })))
+      )
+    );
+    return lists.flat();
   }
 
   async function frustration({ appId, days = 30, top = 3 } = {}) {
@@ -131,5 +152,5 @@ const lib = (() => {
     });
   }
 
-  return Object.freeze({ find, frustration, funnel, visitors, cohorts, guidePolls });
+  return Object.freeze({ catalog, find, frustration, funnel, visitors, cohorts, guidePolls });
 })();
