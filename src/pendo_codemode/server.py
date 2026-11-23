@@ -113,7 +113,7 @@ def tool_definitions(catalog: Catalog, limits: Limits, recipes: RecipeStore | No
             if functions else ""
         )
         + "\n\nRaw tools, as `await pendo.<tool>(args)` (? = optional; → shows the result when it has been "
-        "observed, and which arguments it was observed with). For argument details call `search` with the tool "
+        "observed). For argument details call `search` with the tool "
         "name, or `await pendo.help(name)` inside a program.\n" + catalog.index()
         + (f"\n\nSaved recipes:\n{saved}" if saved else "")
     )
