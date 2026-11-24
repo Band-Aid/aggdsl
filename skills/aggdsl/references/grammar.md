@@ -63,8 +63,16 @@ endbranch
 - Aggregators: `sum count(f)` (distinct non-null) `count(null)` (rows) `countIf(c) avg median min max first any list concat`;
   structured: `funnel({ items=[{'pageId':'x'},{'featureId':'y'}], maxDuration=0, uniqueVisitorFunnel=True })`,
   `inactivityPeriods({...})`, `accumulate({ fields={'count':'count'}, sort=['-steps'] })`.
-- Expressions: `if(c,a,b) isNull isNil isEmpty contains(list|str, x) startsWith split toLowerCase toString len sortUnique listAverage listMedian`,
-  `x[0]`, `== != < <= > >= && || ! + - * / %`. No `in`.
+- Aggregators also include `listAverage(f) listMedian(f)` (list fields, e.g. funnel `durations`).
+- Expressions (Pendo API docs, Aggregation > Expressions; `check.py` flags any other function name):
+  - General: `if(c,a,b)`, `isBoolean isNumber isString isList isNil(x)` (x is null), `isNull(field)` (field exists
+    and is NOT null), `isEmpty(field)` (nil or `""`; error on an unknown type).
+  - String: `contains(str, sub)`, `startsWith(str, prefix)`, `split(str, sep)`, `toLowerCase`, `toString`.
+  - List: `contains(list, x)`, `len`, `list(f1,f2)`, `listInRange(l,min,max)`, `reverse`, `sortUnique`, `sum(list)`, `l[i]`, `l[a:b]`.
+  - Date: `now() date(...) startOfPeriod("daily"|"weekly"|"monthly", ts) dateAdd(ts, n, "days"|"weeks"|"months"|"years") formatTime`.
+  - Pendo: `identified(visitorId)`, `childAccountId`, `parentAccountId`.
+  - Operators: `== != < <= > >= && || ! + - * / %`. `null` is false for `&&`/`||`; any other operator with a null input is null.
+  - No `in` operator and no `isBroken()` function (`isBroken` is a `recordingMetadata` field: `filter !isBroken`).
 - `formatTime(layout, ts)`: Go layout built from `Mon Jan 2 15:04:05 MST 2006`
   (`2006` year, `01` month, `Jan` month name, `02` day, `15` hour, `04` minute, `05` second, `Mon` weekday).
   `"2006-01-02"` → `2025-03-14`; `"Jan 2"` → `Mar 14`.

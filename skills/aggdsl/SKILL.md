@@ -9,7 +9,8 @@ description: >
 # aggDSL
 
 aggDSL compiles to a Pendo Aggregation API body. The compiler checks structure only; field names
-and expressions pass through as opaque strings.
+and expressions pass through as opaque strings. `check.py` additionally lints expressions: unknown
+function names, aggregators outside `group`, unbalanced parentheses, `=` instead of `==`.
 
 ## Workflow (do exactly this)
 
@@ -74,5 +75,7 @@ TIMESERIES period=dayRange first=now() count=-30
 - Prefix rule: `|` = stage of an ordinary pipeline; `||` = stage inside a spawn/fork `branch`. A
   `merge` body is an independent query, so its stages use `|` even inside a branch. A block header
   takes its parent's prefix (`|| merge` inside a branch). See `merge-in-branch`.
+- Only documented expression functions exist (list in `references/grammar.md`); do not invent others
+  (e.g. there is no `isBroken()`; `isNull(f)` is true when f exists and is NOT null).
 - Quote string constants: `eval { t="page" }`. An unquoted or backticked value is a field reference.
 - Anything unmodeled (`reduce`, `accumulate`, `compute`, ...) goes in `| raw {strict JSON}`.

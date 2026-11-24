@@ -47,12 +47,28 @@ def test_every_pattern_in_skill_table_exists() -> None:
         ("FROM event([source=pageEvents, appId=-1])\n| eval { t=`page` }\n", "backticks"),
         ("FROM event([source=pageEvents, appId={{APP_ID}}])\n", "PLACEHOLDER"),
         ("FROM event([source=events, appId=-1])\n| group by day fields { e=sum(numEvents) }\n", "formatTime"),
+        ("FROM event([source=agenticEvents, appId=-1])\n| filter isBroken(conversationId)\n", "isBroken"),
+        ("FROM event([source=agenticEvents, appId=-1])\n| filter fooBar(conversationId)\n", "unknown function `fooBar()`"),
+        ("FROM event([source=agenticEvents, appId=-1])\n| eval { n=count(x) }\n", "aggregator"),
+        ("FROM event([source=agenticEvents, appId=-1])\n| filter (isNil(a) || isEmpty(a)\n", "unbalanced"),
+        ("FROM event([source=agenticEvents, appId=-1])\n| filter a = 1\n", "use `==`"),
+        ("FROM event([source=agenticEvents, appId=-1])\n| filter isNil(a) ||\n", "dangling"),
     ],
 )
 def test_lint_rules(dsl: str, needle: str) -> None:
     result = check(dsl)
     assert result.returncode == 1
     assert needle in result.stdout
+
+
+def test_valid_expressions_pass_lint() -> None:
+    dsl = (
+        "FROM event([source=agenticEvents, appId=-1])\n"
+        '| filter isNil(conversationId) || isEmpty(conversationId) || contains("a(b", content)\n'
+        '| eval { d=formatTime("2006-01-02", dateAdd(startOfPeriod("daily", now()), -1, "days")) }\n'
+    )
+    result = check(dsl)
+    assert result.returncode == 0, result.stdout
 
 
 def test_compile_error_gets_fix_hint() -> None:

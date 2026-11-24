@@ -20,6 +20,12 @@ import re
 import sys
 
 
+def _import():
+    mod = importlib.import_module("aggdsl")
+    importlib.import_module("aggdsl.lint")
+    return mod
+
+
 def _load_aggdsl():
     # Prefer a repo checkout (src/aggdsl in an ancestor) so the repo stays
     # authoritative, then an installed package, then the copy bundled into the
@@ -36,12 +42,12 @@ def _load_aggdsl():
             break
         cur = parent
     try:
-        return importlib.import_module("aggdsl")
+        return _import()
     except ModuleNotFoundError:
         pass
     sys.path.insert(0, os.path.join(here, "vendor"))
     try:
-        return importlib.import_module("aggdsl")
+        return _import()
     except ModuleNotFoundError:
         sys.stderr.write("error: aggdsl compiler not found (skill installed without scripts/vendor/aggdsl)\n")
         sys.exit(2)
@@ -75,7 +81,7 @@ _TIME_GROUP = re.compile(r"group by\s+([\w,]*\b(?:hour|day|week|month|quarter)\b
 _FUTURE = re.compile(r"first=now\(\)\s+count=(\d+)")
 
 
-def lint(text: str) -> list[str]:
+def lint(text: str, aggdsl) -> list[str]:
     out = []
     lines = text.splitlines()
     for i, line in enumerate(lines, 1):
@@ -92,7 +98,7 @@ def lint(text: str) -> list[str]:
             out.append(f"line {i}: first=now() count={m.group(1)} is a FUTURE window; use count=-{m.group(1)}")
         if _TIME_GROUP.search(line) and "formatTime" not in text:
             out.append(f'line {i}: grouped by a time bucket; add `| eval {{ label=formatTime("2006-01-02", day) }}`')
-    return out
+    return out + aggdsl.lint.lint_expressions(text)
 
 
 def main() -> int:
@@ -115,7 +121,7 @@ def main() -> int:
             print(f"{tag}COMPILE ERROR: {exc}" + (f" -> {hint}" if hint else ""))
             worst = 2
             continue
-        warnings = lint(text)
+        warnings = lint(text, aggdsl)
         for w in warnings:
             print(f"{tag}LINT {w}")
         if warnings:

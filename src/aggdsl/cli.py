@@ -5,6 +5,7 @@ import json
 import sys
 
 from .compiler import compile_to_pendo_aggregation
+from .lint import lint_expressions
 from .decompiler import decompile_pendo_aggregation_to_dsl
 from .parser import DslParseError, parse
 
@@ -22,6 +23,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Override current time in epoch ms (useful for deterministic compilation)",
     )
 
+    compile_p.add_argument(
+        "--lint",
+        action="store_true",
+        help="Also check expressions against the Pendo function list; warnings go to stderr and exit 1",
+    )
+
     decompile_p = sub.add_parser(
         "decompile", help="Translate Pendo Aggregation JSON to aggdsl DSL"
     )
@@ -37,7 +44,10 @@ def main(argv: list[str] | None = None) -> int:
             body = compile_to_pendo_aggregation(q, now_ms=args.now_ms)
             json.dump(body, sys.stdout, indent=2, sort_keys=False, ensure_ascii=False)
             sys.stdout.write("\n")
-            return 0
+            warnings = lint_expressions(dsl) if args.lint else []
+            for w in warnings:
+                print(f"lint {w}", file=sys.stderr)
+            return 1 if warnings else 0
         except (OSError, DslParseError, ValueError) as e:
             print(f"error: {e}", file=sys.stderr)
             return 2

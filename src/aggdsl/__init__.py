@@ -1,4 +1,5 @@
 __all__ = [
+	"lint_expressions",
 	"parse",
 	"compile_to_pendo_aggregation",
 	"compile_to_pendo_aggregation_with_format",
@@ -7,6 +8,7 @@ __all__ = [
 ]
 
 from .parser import parse
+from .lint import lint_expressions
 from .compiler import (
 	compile_pipeline,
 	compile_to_pendo_aggregation,
