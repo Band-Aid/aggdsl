@@ -93,6 +93,27 @@ def _split_tokens_preserving_groups(text: str) -> list[str]:
     return tokens
 
 
+_SWITCH_RANGE_RE = re.compile(r"""^(?P<value>"[^"]*"|'[^']*'|[^\s<>=!&]+)\s*(?P<conds>(?:<=|>=|<|>).*)$""")
+_SWITCH_COND_RE = re.compile(r"^(?P<op><=|>=|<|>)\s*(?P<num>-?\d+(?:\.\d+)?)$")
+
+
+def _parse_switch_range_case(part: str) -> dict[str, Any]:
+    """Parse `"label" >= 10 && < 20` into {"value": "label", ">=": 10, "<": 20} (Pendo switch range case)."""
+    m = _SWITCH_RANGE_RE.match(part.strip())
+    if not m:
+        raise DslParseError(f"Invalid switch case: {part}")
+    case: dict[str, Any] = {"value": str(_parse_scalar(m.group("value")))}
+    for cond in m.group("conds").split("&&"):
+        cm = _SWITCH_COND_RE.match(cond.strip())
+        if not cm:
+            raise DslParseError(f"Invalid switch case: {part} (expected comparisons like `>= 10 && < 20`)")
+        op, num = cm.group("op"), cm.group("num")
+        if op in case:
+            raise DslParseError(f"Invalid switch case: {part} (duplicate `{op}`)")
+        case[op] = float(num) if "." in num else int(num)
+    return case
+
+
 def _parse_scalar(token: str) -> Any:
     tok = token.strip()
     if _MOUSTACHE_PLACEHOLDER_RE.match(tok):
@@ -462,14 +483,15 @@ def _parse_stage(text: str) -> Stage:
         field = sm.group("field")
         body = sm.group("body").strip()
         parts = _split_by_comma_respecting_groups(body)
-        cases: list[dict[str, str]] = []
+        cases: list[dict[str, Any]] = []
         for part in parts:
             m = re.match(r"^(?P<value>.+?)\s*==\s*(?P<id>.+?)\s*$", part)
-            if not m:
-                raise DslParseError(f"Invalid switch case: {part}")
-            value = _parse_scalar(m.group("value").strip())
-            ident = _parse_scalar(m.group("id").strip())
-            cases.append({"value": str(value), "==": str(ident)})
+            if m:
+                value = _parse_scalar(m.group("value").strip())
+                ident = _parse_scalar(m.group("id").strip())
+                cases.append({"value": str(value), "==": str(ident)})
+                continue
+            cases.append(_parse_switch_range_case(part))
         return Stage(kind="switch", payload={"out": out_var, "field": field, "cases": cases})
 
     # unmarshal { field=expr, ... }

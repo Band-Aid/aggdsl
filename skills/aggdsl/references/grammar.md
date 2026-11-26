@@ -35,7 +35,8 @@ Object sources (no TIMESERIES; usually inside `merge`): `pages`/`features`/`trac
 | `\| sort -a,+b` | `-` desc, `+`/none asc |
 | `\| limit N` | digits only |
 | `\| join fields [a]` | `[]` allowed |
-| `\| switch out from f { "1"=="a", "2"=="b" }` | value mapping |
+| `\| switch out from f { "1"=="a", "2"=="b" }` | value mapping; `{"value":"1","==":"a"}` |
+| `\| switch out from f { "small" < 10, "medium" >= 10 && < 20 }` | range cases (`< <= > >=`, numeric, `&&`-joined); `{"value":"medium",">=":10,"<":20}`. Cannot mix with `==`; use `\| raw` for other shapes |
 | `\| unwind { field=list, index=i, keepEmpty=True }` | one row per list item |
 | `\| unmarshal { out=expr }` | `{"unmarshal":{"out":"expr"}}` |
 | `\| segment id="..."` | restrict to segment |
@@ -63,7 +64,9 @@ endbranch
 - Aggregators: `sum count(f)` (distinct non-null) `count(null)` (rows) `countIf(c) avg median min max first any list concat`;
   structured: `funnel({ items=[{'pageId':'x'},{'featureId':'y'}], maxDuration=0, uniqueVisitorFunnel=True })`,
   `inactivityPeriods({...})`, `accumulate({ fields={'count':'count'}, sort=['-steps'] })`.
-- Aggregators also include `listAverage(f) listMedian(f)` (list fields, e.g. funnel `durations`).
+- Aggregators also include `listAverage(f) listMedian(f)` (list fields, e.g. funnel `durations`) and
+  `minutesActiveCount(minutesActive)` (only the field `minutesActive`, in grouped events/featureEvents/pageEvents/trackEvents
+  sources; returns unique active minutes). Aggregators take one field/expression argument.
 - Expressions (Pendo API docs, Aggregation > Expressions; `check.py` flags any other function name):
   - General: `if(c,a,b)`, `isBoolean isNumber isString isList isNil(x)` (x is null), `isNull(field)` (field exists
     and is NOT null), `isEmpty(field)` (nil or `""`; error on an unknown type).
