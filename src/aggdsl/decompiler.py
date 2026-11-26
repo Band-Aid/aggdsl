@@ -219,9 +219,19 @@ def _decompile_stage(stage: Any, *, prefix: str) -> list[str]:
                 if isinstance(cases, list):
                     cases_text: list[str] = []
                     for c in cases:
-                        if not isinstance(c, dict) or "value" not in c or "==" not in c:
+                        if not isinstance(c, dict) or "value" not in c:
                             return [f"{prefix} raw {_json_one_line(stage)}"]
-                        cases_text.append(f"{_format_switch_scalar(c['value'])}=={_format_switch_scalar(c['=='])}")
+                        ops = [k for k in c if k != "value"]
+                        if ops == ["=="]:
+                            cases_text.append(f"{_format_switch_scalar(c['value'])}=={_format_switch_scalar(c['=='])}")
+                        elif ops and all(
+                            k in ("<", "<=", ">", ">=") and isinstance(c[k], (int, float)) and not isinstance(c[k], bool)
+                            for k in ops
+                        ):
+                            conds = " && ".join(f"{k} {json.dumps(c[k])}" for k in ops)
+                            cases_text.append(f"{_format_switch_scalar(c['value'])} {conds}")
+                        else:
+                            return [f"{prefix} raw {_json_one_line(stage)}"]
                     return [f"{prefix} switch {out_var} from {field} {{ " + ", ".join(cases_text) + " }"]
 
     if "group" in stage and len(stage) == 1 and isinstance(stage["group"], dict):
